@@ -36,8 +36,11 @@ the docs drift (e.g. `docs/plugins.md:56` claims the SDK is unpublished; it is o
 - All `sbx` shelling lives behind `plugin.handle(...)` RPCs in `*.server.ts`. The client bundle runs in
   the app with a strict require allowlist and has no `node:*`.
 - RPC handlers have a 30s timeout.
-- Command Center `onSelect` runs inside the mobile sheet's close commit, so navigate on the next
-  tick — a synchronous `openSurface` throws `useBottomSheetInternal` on iOS/Android.
+- The plugin contributes **no Command Center item**. On mobile the Command Center is a `@gorhom`
+  bottom-sheet modal whose `select()` closes the sheet and runs the item's action in the same commit
+  (`command-center.tsx:311-316`); navigating from there throws `useBottomSheetInternal`. Deferring
+  the `openSurface` a tick did not clear it, so the contribution is gone until Paseo fixes the race.
+  Do not re-add it without testing on a phone.
 - The SDK's runtime surface is whatever the *installed app* injects, which can lag the generated
   `paseo-plugin.d.ts` — the host-rendered `Icon` type exists in the scaffold but not in the runtime of
   Paseo < 0.7.0-beta.1, and rendering an undefined import is React error #130. Guard newer SDK exports
