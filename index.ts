@@ -13,7 +13,11 @@ export default function contribute(plugin: PluginContext) {
     icon: "Box",
     context: "global",
     onSelect({ openSurface }) {
-      openSurface("main");
+      // The mobile Command Center is a @gorhom bottom-sheet modal whose select() closes the sheet
+      // and runs this callback in the same commit (command-center.tsx:311-316). Navigating there
+      // unmounts the sheet's provider while BottomSheetTextInput/BottomSheetFlatList are still
+      // rendering, and useBottomSheetInternal throws. Let the close commit land first.
+      setTimeout(() => openSurface("main"), 0);
     },
   });
   return () => {};
