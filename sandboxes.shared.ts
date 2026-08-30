@@ -1,0 +1,31 @@
+import { defineRpc } from "@getpaseo/plugin";
+import { z } from "zod";
+
+// Field set is pinned to what §5.4 of docs/research/would_that_work.md calls out as consumed —
+// `sbx ls --json` has no documented schema, so unknown/extra fields are ignored rather than
+// rejected, and malformed entries are dropped instead of failing the whole list.
+export const SbxSandboxPortSchema = z.object({
+  host_ip: z.string(),
+  host_port: z.number(),
+  sandbox_port: z.number(),
+  protocol: z.string(),
+});
+
+export const SbxSandboxSchema = z.object({
+  name: z.string(),
+  id: z.string(),
+  agent: z.string().nullable().default(null),
+  status: z.string(),
+  ports: z.array(SbxSandboxPortSchema).default([]),
+  workspaces: z.array(z.string()).default([]),
+});
+export type SbxSandbox = z.output<typeof SbxSandboxSchema>;
+
+export const listSandboxesRpc = defineRpc({
+  name: "sbx.list-sandboxes",
+  input: z.object({}),
+  output: z.object({
+    sandboxes: z.array(SbxSandboxSchema),
+    error: z.string().nullable(),
+  }),
+});

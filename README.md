@@ -4,8 +4,10 @@ A [Paseo](https://github.com/getpaseo/paseo) plugin that manages [Docker `sbx`](
 sandboxes and exposes each one as a Paseo agent provider — so picking "Claude · sbx:myproj" in Paseo runs
 Claude Code inside that sandbox, against the same working directory.
 
-**Status: plugin scaffolded, unimplemented.** `paseo plugin init` scaffold is in place and typechecks;
-the reconciler, RPC handlers, and launcher shim from the design doc are not written yet.
+**Status: read-only sandbox list working, reconciler unimplemented.** The main surface lists sandboxes
+from `sbx ls --json` (name, status, agent, workspaces, ports), polling every 5s. The reconciler that
+writes `agents.providers.sbx-*` entries and the launcher shim are not written yet — selecting a sandbox
+as an agent provider doesn't work.
 
 ## How it works
 

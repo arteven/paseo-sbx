@@ -448,7 +448,11 @@ daemon and real sandboxes.
 
 ## 10. Open questions before implementation
 
-1. **[UNVERIFIED]** `sbx ls --json` field names and stability.
+1. **[UNVERIFIED]** `sbx ls --json` field names and stability. Re-checked 2026-08-30 against
+   `data/sbx_cli/sbx_ls.yaml` in `docker/docs` — the spec documents only the flags (`--json`, `--quiet`,
+   `--help`), not an output schema. `sandboxes.shared.ts` pins the fields from the user-supplied example
+   (`name`, `id`, `agent`, `status`, `ports[]`, `workspaces[]`) and `sandboxes.server.ts` drops any entry
+   that doesn't match rather than failing the list. No `sbx inspect`-equivalent exists for more detail.
 2. **[UNVERIFIED]** Whether Paseo opens host-side terminals for a `extends: "claude"` session that should
    have been in the sandbox (§4).
 3. **[UNVERIFIED]** Whether `sbx mcp` can carry Paseo's bearer-authenticated `/mcp/agents` endpoint, if the
