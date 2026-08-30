@@ -31,6 +31,26 @@ function Glyph(props: PluginIconProps) {
   return <HostIcon {...props} />;
 }
 
+// Lucide's ChevronDown when the host provides icons; otherwise the same shape drawn from two
+// borders, which beats a "▾" text glyph — that sits off the baseline and ignores the icon scale.
+function Chevron({ up, color }: { up: boolean; color: string }) {
+  if (ICONS_AVAILABLE) return <Glyph name={up ? "ChevronUp" : "ChevronDown"} size={14} color={color} />;
+  return (
+    <View style={{ width: 14, height: 14, alignItems: "center", justifyContent: "center" }}>
+      <View
+        style={{
+          width: 6,
+          height: 6,
+          borderRightWidth: 1.5,
+          borderBottomWidth: 1.5,
+          borderColor: color,
+          transform: [{ rotate: up ? "225deg" : "45deg" }, { translateY: up ? 1 : -1 }],
+        }}
+      />
+    </View>
+  );
+}
+
 type SbxPort = SbxSandbox["ports"][number];
 type Colors = PluginTheme["colors"];
 
@@ -155,15 +175,30 @@ function useStyles(theme: PluginTheme) {
       rowBorder: { borderTopWidth: 1, borderTopColor: colors.border },
       rowHovered: { backgroundColor: colors.surface2 },
       rowContent: { flex: 1, marginRight: 12 },
-      rowTitleLine: { flexDirection: "row" as const, alignItems: "center" as const, gap: 8 },
-      dot: { width: 6, height: 6, borderRadius: 3 },
-      rowTitle: { color: colors.foreground, fontSize: 14, flexShrink: 1 },
-      rowHint: { color: colors.foregroundMuted, fontSize: 12, marginTop: 4, marginLeft: 14 },
-      rowTrailing: { flexDirection: "row" as const, alignItems: "center" as const, gap: 8 },
-      status: { fontSize: 12 },
-      disclosure: { color: colors.foregroundMuted, fontSize: 11 },
+      rowTitle: { color: colors.foreground, fontSize: 14 },
+      rowHint: { color: colors.foregroundMuted, fontSize: 12, marginTop: 4 },
+      rowTrailing: { flexDirection: "row" as const, alignItems: "center" as const, gap: 4 },
 
-      details: { marginTop: 12, marginLeft: 14, gap: 8 },
+      // StatusBadge (packages/app/src/components/ui/status-badge.tsx): neutral pill, only the
+      // text and the leading dot carry the status hue — never the fill. surface3 is outside the
+      // plugin's token set, so surface2 stands in for it.
+      pill: {
+        flexDirection: "row" as const,
+        alignItems: "center" as const,
+        gap: 6,
+        borderRadius: 9999,
+        borderWidth: 1,
+        borderColor: colors.border,
+        backgroundColor: colors.surface2,
+        paddingHorizontal: 8,
+        paddingVertical: 3,
+      },
+      pillText: { fontSize: 12 },
+      dot: { width: 6, height: 6, borderRadius: 3 },
+      // DropdownTrigger nudges its chevron down a pixel to sit on the text baseline.
+      chevron: { transform: [{ translateY: 1 }] },
+
+      details: { marginTop: 12, gap: 8 },
       detailRow: { flexDirection: "row" as const, alignItems: "flex-start" as const, gap: 12 },
       detailLabel: { color: colors.foregroundMuted, fontSize: 12, width: 88 },
       detailValues: { flex: 1, gap: 2 },
@@ -252,12 +287,9 @@ function SandboxRow({
       ]}
     >
       <View style={styles.rowContent}>
-        <View style={styles.rowTitleLine}>
-          <View style={[styles.dot, { backgroundColor: statusColor(sandbox.status, colors) }]} />
-          <Text style={styles.rowTitle} numberOfLines={1}>
-            {sandbox.name}
-          </Text>
-        </View>
+        <Text style={styles.rowTitle} numberOfLines={1}>
+          {sandbox.name}
+        </Text>
 
         {meta.length > 0 && (
           <Text style={styles.rowHint} numberOfLines={1}>
@@ -288,18 +320,15 @@ function SandboxRow({
       </View>
 
       <View style={styles.rowTrailing}>
-        <Text style={[styles.status, { color: statusColor(sandbox.status, colors) }]}>
-          {sandbox.status}
-        </Text>
-        {ICONS_AVAILABLE ? (
-          <Glyph
-            name={expanded ? "ChevronUp" : "ChevronDown"}
-            size={14}
-            color={colors.foregroundMuted}
-          />
-        ) : (
-          <Text style={styles.disclosure}>{expanded ? "▴" : "▾"}</Text>
-        )}
+        <View style={styles.pill}>
+          <View style={[styles.dot, { backgroundColor: statusColor(sandbox.status, colors) }]} />
+          <Text style={[styles.pillText, { color: statusColor(sandbox.status, colors) }]}>
+            {sandbox.status}
+          </Text>
+        </View>
+        <View style={styles.chevron}>
+          <Chevron up={expanded} color={colors.foregroundMuted} />
+        </View>
       </View>
     </Pressable>
   );
