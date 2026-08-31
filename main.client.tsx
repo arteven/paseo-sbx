@@ -227,19 +227,27 @@ export function MainSurface({ theme }: PluginSurfaceProps) {
   const [error, setError] = useState<string | null>(null);
   const styles = useStyles(theme);
 
-  const refresh = useCallback(async () => {
-    try {
-      const result = await listSandboxes({});
-      setSandboxes(result.sandboxes);
-      setError(result.error);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
+  // Deliberately a promise chain, not async/await. The plugin compiler builds client bundles with
+  // esbuild's `supported: { "async-await": false }`, which lowers await into a `function*` driven by
+  // a __async helper. That is only half of what Metro does for app code, and the generator syntax
+  // that survives is a parse error on the Hermes build shipped in the mobile app — which makes
+  // evaluate.ts throw, and registry.ts drop *every* contribution, sidebar item included, with the
+  // error going nowhere but console.warn. No async in *.client.tsx; see docs/research/ui.md.
+  const refresh = useCallback(() => {
+    listSandboxes({}).then(
+      (result) => {
+        setSandboxes(result.sandboxes);
+        setError(result.error);
+      },
+      (err: unknown) => {
+        setError(err instanceof Error ? err.message : String(err));
+      },
+    );
   }, [listSandboxes]);
 
   useEffect(() => {
-    void refresh();
-    const interval = setInterval(() => void refresh(), POLL_INTERVAL_MS);
+    refresh();
+    const interval = setInterval(refresh, POLL_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [refresh]);
 

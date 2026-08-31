@@ -3,7 +3,9 @@
   "private": true,
   "version": "0.0.0",
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check:client": "node scripts/check-client-syntax.mjs",
+    "check": "npm run typecheck && npm run check:client"
   },
   "devDependencies": {
     "@getpaseo/client": "^0.4.0",

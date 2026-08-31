@@ -37,6 +37,19 @@ the docs drift (e.g. `docs/plugins.md:56` claims the SDK is unpublished; it is o
 - All `sbx` shelling lives behind `plugin.handle(...)` RPCs in `*.server.ts`. The client bundle runs in
   the app with a strict require allowlist and has no `node:*`.
 - RPC handlers have a 30s timeout.
+- **Never write `async`/`await` (or generators) in `*.client.tsx` or `*.shared.ts`.** The compiler
+  builds client bundles with esbuild's `supported: { "async-await": false }`, meaning to mirror what
+  Metro does before Hermes sees app code — but esbuild only lowers `await` into a `function*` driven
+  by a `__async` helper and leaves the generator, while Metro's preset lowers generators too. The
+  mobile app's Hermes cannot parse the surviving `function*`, so `globalThis.eval(bundle)` throws in
+  `plugins/evaluate.ts`, `plugins/registry.ts:71-74` catches it and returns `[]`, and **every**
+  contribution vanishes at once — sidebar item included. Desktop's V8 parses it fine, so this is
+  invisible until someone opens the phone, and the error reaches nothing but `console.warn` (the
+  Settings → Plugins readout that would show it lands only in v0.7.0-beta.3; the phone here is
+  0.5.2). Use promise chains. `npm run check:client` enforces this via the TS AST; run
+  `npm run check` before every device test. Confirmed by bisection: seven device round trips split
+  perfectly on `function*` count in the bundle and on nothing else — not size (a 24.8 KB
+  generator-free bundle worked), not `zod`, not `useRpc`, not what the surface renders.
 - The plugin contributes **no Command Center item** — dropped in `1cefeb9` after a mobile crash, and
   still out because nobody has retested on a phone. The recorded rationale (that `select()` closing
   the `@gorhom` sheet and navigating in the same commit throws `useBottomSheetInternal`) is **not
@@ -46,7 +59,10 @@ the docs drift (e.g. `docs/plugins.md:56` claims the SDK is unpublished; it is o
   (`plugins/command-center/registration.tsx`) yields nothing when `serverId` is null, so the item is
   absent off a `/h/<id>` route regardless; and the **sidebar** item is a separate mechanism that is
   fine on mobile — `MobileSidebar` renders `PluginSidebarItems` at every tag from v0.6.0 on. Do not
-  re-add the Command Center item without testing on a phone.
+  re-add the Command Center item without testing on a phone. Note that the generator bug above was
+  live when the item was dropped, and it takes down every contribution at once, so the original
+  "mobile crash" may simply have been that — worth one retest now that the bundle is clean, rather
+  than treating the removal as settled.
 - The SDK's runtime surface is whatever the *installed app* injects, which can lag the generated
   `paseo-plugin.d.ts` — the host-rendered `Icon` type exists in the scaffold but not in the runtime of
   Paseo < 0.7.0-beta.1, and rendering an undefined import is React error #130. Guard newer SDK exports

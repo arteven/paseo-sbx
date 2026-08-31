@@ -118,6 +118,31 @@ surface does not, and that is deliberate: the settings screen it copies does not
 padding and `maxWidth` are unconditional. On a phone the cap simply never binds. If you add a style
 that genuinely differs on mobile, branch it and recreate the memo on `layout.compact`.
 
+## No `async`/`await` in client-reachable code
+
+This is the single sharpest trap in the whole surface, and it is not a styling matter — it decides
+whether the plugin appears at all.
+
+`packages/server/src/server/plugins/compiler.ts` compiles client bundles with esbuild's
+`supported: { "async-await": false }`, and its comment explains the intent: Metro lowers async
+syntax before Hermes sees app code, plugin client bundles bypass Metro, so apply the same transform.
+The transform is not the same. esbuild rewrites `await` into a `function*` driven by a `__async`
+helper and stops there; Metro's preset continues on and lowers the generator too. The `function*`
+that survives is a parse error on the Hermes build in the mobile app.
+
+The consequence is total and silent. `packages/app/src/plugins/evaluate.ts` runs the bundle through
+`globalThis.eval`, so the throw happens at parse time, before any of your code executes.
+`packages/app/src/plugins/registry.ts` catches it, stashes it in `evaluationErrors`, `console.warn`s
+it and returns `[]` — which drops the sidebar item, the surface and any Command Center item together.
+Nothing renders and nothing is reported: `getEvaluationError` exists from v0.6.1 but no UI reads it
+until `packages/app/src/screens/settings/plugins-page.tsx` in v0.7.0-beta.3. Desktop runs V8, parses
+generators happily, and shows you a working plugin the whole time.
+
+Write promise chains instead — `p.then(onFulfilled, onRejected)` covers what `try`/`await`/`catch`
+was doing. The rule extends to `*.shared.ts`, which is bundled into the client alongside the
+surface. `npm run check:client` walks the TS AST of every client-reachable file and fails on `async`,
+`await`, `function*`, `yield` and `for await…of`; `npm run check` runs it with the typecheck.
+
 ## Icons: don't, unless you have checked the runtime
 
 The host's `Icon` is documented under § *Icons* in `public-docs/plugins/reference.md`, and it
