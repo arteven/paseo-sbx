@@ -1,5 +1,6 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import { ActionSummarySchema } from "./actions.shared";
 
 // Field set is pinned to what §5.4 of docs/research/would_that_work.md calls out as consumed —
 // `sbx ls --json` has no documented schema, so unknown/extra fields are ignored rather than
@@ -43,5 +44,10 @@ export const listSandboxesRpc = defineRpc({
     sandboxes: z.array(SbxSandboxSchema),
     error: z.string().nullable(),
     reconcile: ReconcileOutcomeSchema,
+    // Custom sandbox actions are global — the same set renders on every sandbox row, in every
+    // status — so this rides the existing 5s poll instead of a second RPC/loading state. Labels
+    // only; see actions.shared.ts for why the command string itself never reaches the client.
+    actions: z.array(ActionSummarySchema),
+    actionsWarning: z.string().nullable(),
   }),
 });

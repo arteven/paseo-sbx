@@ -11,8 +11,10 @@ entries via `paseo.config.patch()`, each pointed at the committed launcher shim
 (`shims/paseo-sbx-launch`). The shim's cwd guard and in-sandbox process teardown (no leaked/hung `claude`
 process across repeated start/kill cycles — see `docs/research/would_that_work.md` §10 Q7) have been
 verified against a live sbx; the reconciler's own `config.patch()` writes and the generated provider
-entries have not yet been exercised end-to-end against a live daemon. Neither `sbx` nor `paseo` is
-installed inside a development sandbox (see `docs/research/would_that_work.md` §8), so this has been
+entries have not yet been exercised end-to-end against a live daemon. Each sandbox row also renders
+user-configured [custom action buttons](#custom-sandbox-actions), but that execution path is likewise
+unverified against a live daemon (`docs/research/would_that_work.md` §10 Q8). Neither `sbx` nor `paseo`
+is installed inside a development sandbox (see `docs/research/would_that_work.md` §8), so this has been
 typechecked, and `node:test` tests were written for its pure logic, but the tests themselves haven't run
 either — this dev sandbox's Node build lacks TypeScript-stripping support, so `npm test` must be run on
 the host.
@@ -33,6 +35,35 @@ the daemon (on the host) and the agent (in the sandbox) agree on `cwd`.
 
 Design decisions: `extends: "claude"` (keeps Paseo's native Claude integration) and user-managed
 sandboxes (the plugin surfaces what exists rather than auto-creating).
+
+## Custom sandbox actions
+
+Each sandbox row can show a row of user-defined buttons — e.g. "Publish 8080", "Stop" — that run a
+shell command **on the host** (not inside the sandbox) when pressed. Configure them in
+`$PASEO_HOME/sbx-actions.json` (defaults to `~/.paseo/sbx-actions.json`; not created automatically):
+
+```json
+{
+  "actions": [
+    { "label": "Publish 8080", "command": "sbx ports $SBX_SANDBOX_NAME --publish 8080:8080" },
+    { "label": "Stop", "command": "sbx stop $SBX_SANDBOX_NAME" }
+  ]
+}
+```
+
+- `label` and `command` are both required strings; extra fields on an entry are ignored.
+- The command runs through the same shell-invocation logic Paseo uses for its own setup commands
+  (`bash -c` on Linux/macOS, PowerShell on Windows), with `$SBX_SANDBOX_NAME` set to the sandbox's
+  name — that's the only way the sandbox is identified to the command, there's no path templating.
+- The same action list applies to every sandbox row; there's no per-sandbox or per-status config.
+- If the file is missing, the action row is simply empty. If it exists but is malformed, valid
+  entries still load and a warning banner names what was dropped and why — a bad file never blocks
+  the sandbox list itself.
+- The command's exit code, stdout, and stderr come back as a toast (and a modal for non-trivial
+  output); there's no live-streaming output.
+
+This lives in `$PASEO_HOME` rather than Paseo's own `config.json` because there's no plugin storage
+API — see `docs/research/would_that_work.md` §5.5 for why.
 
 ## Read this first
 

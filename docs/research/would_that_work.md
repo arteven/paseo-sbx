@@ -418,6 +418,70 @@ All of these are available and map cleanly onto the surface from §2.1:
 - `addCommandCenterItem` — "Create sbx sandbox for this workspace", "Stop sandbox", "Open sandbox shell".
 - `addClientSide` + `addComposerPill` — live sandbox status next to a running agent.
 
+### 5.5 Custom sandbox actions — implemented
+
+User-configurable buttons on each sandbox row, config-driven: `{ label, command }`. A generalized,
+user-authored alternative to hardcoding `create`/`stop`/`rm` buttons per §5.4's Sandboxes-screen bullet.
+
+**Config**: `$PASEO_HOME/sbx-actions.json` (`{ "actions": [{ "label": ..., "command": ... }] }`),
+resolved the way paseo resolves its own `PASEO_HOME` (`packages/server/src/server/paseo-home.ts`:
+`env.PASEO_HOME ?? "~/.paseo"`, expand a leading `~/`, `path.resolve`) — but *not* through
+`ensurePrivateDirectory()`, since this is our own file and a read RPC should not have the side effect
+of creating `~/.paseo`. Actions are global (every action renders on every sandbox row, in every
+status — no `when` gating). Re-read on every RPC call, no cache/watcher: the surface already polls
+`sbx.list-sandboxes` every 5s, so an edited file hot-reloads within one poll. An absent file means no
+actions, silently. A malformed entry is dropped and the rest kept (`SbxActionSchema.safeParse` inside
+a `flatMap`, the same idiom `sandboxes.server.ts` uses for `sbx ls --json`), but — unlike that
+undocumented CLI schema — a warning naming what was dropped is surfaced in the UI, since silently
+discarding an action the user believes they configured is the worst failure mode to debug.
+
+**Why not `~/.paseo/config.json`**: investigated and rejected. The on-disk `PersistedConfigSchema` is
+`.strict()` (`persisted-config.ts`) — an unknown root key stops the daemon from starting entirely.
+Writes via `paseo.config.patch()` are silently dropped by `pickSupportedPatchFields()`
+(`daemon-config-store.ts:340`), a hand-written allowlist; the `.passthrough()` on the *mutable* wire
+schema is a red herring, since it's not the on-disk one. And there is no plugin settings/storage API
+at all (`public-docs/plugins/reference.md:89`: *"There is no plugin storage API."*) — the only
+upstream plugin with any config (`linear`) reads an env var instead. A plugin-owned file under
+`$PASEO_HOME` sidesteps all three.
+
+**Execution**: host-side (where the daemon runs), not inside the sandbox — reachable already via
+`sbx exec <sandbox> -- ...` in a user's own command string if they want that. Mirrors paseo's own
+house style for user-authored command strings (`packages/server/src/utils/string-command-shell.ts` +
+`execSetupCommand` in `worktree.ts`): `{ shell: "bash", args: ["-c", command] }` on POSIX,
+`powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command <command>` on `win32`, run via
+`execFile` (not paseo's other, argv-array/no-shell style, which is for structured integration points
+like `ProviderOverrideSchema`/`McpStdioServerConfigSchema`, not user-typed strings). `BASH_ENV` is
+scrubbed from the child's env for the same reason paseo scrubs it — shell startup files should not
+rewrite it behind our back — and it matters doubly in *this* dev sandbox, which sets
+`BASH_ENV=/etc/sandbox-persistent.sh`. `cwd` is the sandbox's first workspace, falling back to
+`os.homedir()` if it has none. The sandbox name is injected as the env var `SBX_SANDBOX_NAME` only —
+no textual templating (`{{name}}`/`${name}`) — matching paseo's own convention of injecting
+`PASEO_WORKTREE_PATH` et al. into command strings with no substitution anywhere in the codebase.
+
+**RPC** (`sbx.run-action`, input `{ sandboxName, actionIndex }`): the server re-reads the config and
+bounds-checks the index *before* doing anything else, returning a clean "stale" outcome instead of
+running the wrong command if the config shrank between render and press. The command string itself
+never reaches the client — sending it would turn this into a general "run this string on the host"
+endpoint, and looking it up by label instead was rejected because duplicate labels break it. Labels
+(never commands) ride along on `sbx.list-sandboxes`'s existing output instead of a second RPC, so they
+stay fresh on the same 5s cadence with no extra loading state.
+
+**Feedback**: there is no streaming API reachable from plugin code (the plugin IPC protocol has five
+message types and no progress/chunk message, and `DaemonClient`'s terminal RPCs are unreachable from
+plugins) — so this is request/response only. Success shows a toast with stdout's first non-empty line
+(collapsed, truncated), falling back to "done" if the command was silent. Failure shows an error toast
+plus a `Modal` with stdout/stderr, unless both are empty, in which case the modal is suppressed and
+the toast alone carries the exit code — an empty modal is pure friction. The RPC's 30s host-side
+ceiling is its own outcome, not a failure: `execFile` giving up does not kill the still-running
+command, so the client races its own 30s timer against the RPC and reports "still running" rather than
+calling it a failure. Accepted trade-offs, eyes open: no `when` gating (a "Stop" button can appear on
+an already-stopped sandbox and just fail on press), no `confirm` step even for destructive actions,
+and the stale-index race is mitigated (bounds-check + clean error) rather than eliminated.
+
+**Still unverified in this dev sandbox** (see §8): the execution path itself — shell invocation, env
+injection, `cwd` resolution — needs a real host with `sbx`/`paseo` installed. Only the pure config
+parsing, fail-soft dropping, and bounds-checking are unit-tested (`actions.server.test.ts`).
+
 ---
 
 ## 6. Risks and their resolutions
@@ -560,5 +624,11 @@ daemon and real sandboxes.
    fixed it: `-i` was keeping stdin open past client detach, so a leaked process never saw EOF and never
    exited on its own; without `-i`, stdin closes with the client and the in-sandbox process exits with it.
    **Verified working** — repeated start/kill cycles against the same sandbox no longer leak processes.
+8. **[UNVERIFIED]** Custom sandbox actions execution path (§5.5). The shell invocation is mirrored
+   line-for-line from `string-command-shell.ts`/`execSetupCommand` and the pure config-parsing logic
+   (`actions.server.ts`) is unit-tested, but the RPC handler's actual `execFile` call — including
+   `cwd` resolution against a real sandbox's `workspaces[0]`, `SBX_SANDBOX_NAME` injection, and the
+   30s client-side timeout race — has not been exercised against a live daemon from this dev sandbox
+   (§8). Needs a pass on the host with a real `sbx-actions.json` before this is considered confirmed.
    The reconciler's own teardown (§5.3) still only ever removes provider *config* entries; process cleanup
    is handled entirely by this stdin-EOF behavior, not by the reconciler.
