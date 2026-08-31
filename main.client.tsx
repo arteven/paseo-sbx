@@ -2,7 +2,7 @@ import type { PluginSurfaceProps, PluginTheme } from "@getpaseo/plugin";
 import { useRpc } from "@getpaseo/plugin";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
-import type { SbxSandbox } from "./sandboxes.shared";
+import type { ReconcileOutcome, SbxSandbox } from "./sandboxes.shared";
 import { listSandboxesRpc } from "./sandboxes.shared";
 import type { PluginColors } from "./theme.shared";
 import {
@@ -159,6 +159,29 @@ function useStyles(theme: PluginTheme) {
       },
       alertDescription: { color: colors.foregroundMuted, fontSize: fontSize.sm },
 
+      // Same shape as `alert`, in the warning hue — for reconcile problems, which are about the
+      // generated providers rather than the sandbox list itself and so get their own box.
+      alertWarning: {
+        gap: spacing[1],
+        borderWidth: 1,
+        borderColor: colors.statusWarning,
+        backgroundColor: "transparent",
+        borderRadius: borderRadius.xl,
+        paddingVertical: spacing[3],
+        paddingHorizontal: spacing[4],
+        marginBottom: spacing[4],
+      },
+      alertWarningTitle: {
+        color: colors.statusWarning,
+        fontSize: fontSize.base,
+        fontWeight: fontWeight.medium,
+      },
+
+      // A skip reason is routine (not an error), so it gets the muted hint treatment rather than
+      // an alert box — the same visual weight as a row's own meta line.
+      skipNote: { marginBottom: spacing[4], marginLeft: spacing[1], gap: spacing[1] },
+      skipNoteText: { color: colors.foregroundMuted, fontSize: fontSize.sm },
+
       // sidebar/empty-states.tsx: a centred column, no card treatment.
       empty: { alignItems: "center" as const, paddingVertical: spacing[12], gap: spacing[3] },
       emptyTitle: {
@@ -225,6 +248,7 @@ export function MainSurface({ theme }: PluginSurfaceProps) {
   const listSandboxes = useRpc(listSandboxesRpc);
   const [sandboxes, setSandboxes] = useState<SbxSandbox[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reconcile, setReconcile] = useState<ReconcileOutcome | null>(null);
   const styles = useStyles(theme);
 
   // Deliberately a promise chain, not async/await. The plugin compiler builds client bundles with
@@ -238,6 +262,7 @@ export function MainSurface({ theme }: PluginSurfaceProps) {
       (result) => {
         setSandboxes(result.sandboxes);
         setError(result.error);
+        setReconcile(result.reconcile);
       },
       (err: unknown) => {
         setError(err instanceof Error ? err.message : String(err));
@@ -258,8 +283,15 @@ export function MainSurface({ theme }: PluginSurfaceProps) {
     if (sandboxes === null) return "Loading…";
     if (sandboxes.length === 0) return "No sandboxes";
     const running = sandboxes.filter((sandbox) => sandbox.status.toLowerCase() === "running");
-    return `${sandboxes.length} sandbox${sandboxes.length === 1 ? "" : "es"} · ${running.length} running`;
-  }, [sandboxes]);
+    const items = [
+      `${sandboxes.length} sandbox${sandboxes.length === 1 ? "" : "es"}`,
+      `${running.length} running`,
+    ];
+    if (reconcile) {
+      items.push(`${reconcile.generated.length} provider${reconcile.generated.length === 1 ? "" : "s"}`);
+    }
+    return items.join(" · ");
+  }, [sandboxes, reconcile]);
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
@@ -282,6 +314,23 @@ export function MainSurface({ theme }: PluginSurfaceProps) {
         <View style={styles.alert} accessibilityRole="alert">
           <Text style={styles.alertTitle}>Could not read sandboxes</Text>
           <Text style={styles.alertDescription}>{error}</Text>
+        </View>
+      ) : null}
+
+      {reconcile?.error ? (
+        <View style={styles.alertWarning} accessibilityRole="alert">
+          <Text style={styles.alertWarningTitle}>Could not update providers</Text>
+          <Text style={styles.alertDescription}>{reconcile.error}</Text>
+        </View>
+      ) : null}
+
+      {reconcile && reconcile.skipped.length > 0 ? (
+        <View style={styles.skipNote}>
+          {reconcile.skipped.map((skip) => (
+            <Text key={skip.sandbox} style={styles.skipNoteText} numberOfLines={1}>
+              {skip.sandbox} not mirrored: {skip.reason}
+            </Text>
+          ))}
         </View>
       ) : null}
 

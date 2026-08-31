@@ -21,11 +21,27 @@ export const SbxSandboxSchema = z.object({
 });
 export type SbxSandbox = z.output<typeof SbxSandboxSchema>;
 
+export const ReconcileSkipSchema = z.object({
+  sandbox: z.string(),
+  reason: z.string(),
+});
+export type ReconcileSkip = z.output<typeof ReconcileSkipSchema>;
+
+// Reported so the UI never has to guess why a sandbox has no provider — see docs/research/would_that_work.md.
+export const ReconcileOutcomeSchema = z.object({
+  generated: z.array(z.string()),
+  removed: z.array(z.string()),
+  skipped: z.array(ReconcileSkipSchema),
+  error: z.string().nullable(),
+});
+export type ReconcileOutcome = z.output<typeof ReconcileOutcomeSchema>;
+
 export const listSandboxesRpc = defineRpc({
   name: "sbx.list-sandboxes",
   input: z.object({}),
   output: z.object({
     sandboxes: z.array(SbxSandboxSchema),
     error: z.string().nullable(),
+    reconcile: ReconcileOutcomeSchema,
   }),
 });

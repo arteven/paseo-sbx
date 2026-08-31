@@ -1,0 +1,33 @@
+#!/usr/bin/env sh
+# argv[0] of every generated sbx-* provider entry. PASEO_SBX_SANDBOX, PASEO_SBX_AGENT and
+# PASEO_SBX_WORKSPACES come from the provider entry's `env`, written by the reconciler
+# (see reconcile.server.ts). `command` in provider config is a static string[] with no cwd
+# field, so this shim is what turns the daemon's own $PWD into the sandbox's `-w`.
+set -eu
+
+# $PWD must be inside one of this sandbox's workspaces (prefix match, not exact — sessions
+# legitimately start in a subdirectory of a served workspace). A stale or wrong-sandbox pick
+# fails loudly here instead of silently launching against the wrong project.
+matched=0
+old_ifs=$IFS
+IFS=:
+for workspace in $PASEO_SBX_WORKSPACES; do
+  case "$PWD" in
+    "$workspace" | "$workspace"/*) matched=1 ;;
+  esac
+done
+IFS=$old_ifs
+
+if [ "$matched" -ne 1 ]; then
+  served=$(echo "$PASEO_SBX_WORKSPACES" | tr ':' ' ')
+  echo "workspace $PWD is not served by sandbox $PASEO_SBX_SANDBOX (serves: $served)" >&2
+  exit 1
+fi
+
+# -i with no -t: a tty corrupts JSON framing (confirmed against a live sbx). The inner
+# `command -v` catches a sandbox whose `agent` field lied about having the requested agent
+# installed, turning a confusing hang into a clear "no claude in sandbox" error. Outer `exec`
+# keeps the daemon's direct child the `sbx` client, with no extra process layer.
+exec sbx exec -i -w "$PWD" "$PASEO_SBX_SANDBOX" \
+  sh -c 'command -v "$1" >/dev/null || { echo "no $1 in sandbox" >&2; exit 127; }; shift; exec "$0" "$@"' \
+  "$PASEO_SBX_AGENT" "$@"

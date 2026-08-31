@@ -242,10 +242,11 @@ Bash tool in-process, which will be inside the sandbox) needs confirming on a li
 ```
 Paseo daemon (host)                         sbx sandbox "myproj"
 ┌──────────────────────────────┐            ┌─────────────────────────────┐
-│ plugin subprocess            │            │                             │
-│  ├ RPC handlers ──spawn──────┼── sbx ls --json / create / stop / rm     │
-│  └ reconciler                │            │                             │
-│        │ config.patch({providers})        │                             │
+│ plugin subprocess             │            │                             │
+│  list-sandboxes RPC handler  │            │                             │
+│   ├ spawn ────────────────────┼── sbx ls --json                          │
+│   └ reconciler (same call) ──┼── (no separate trigger — §5.3)           │
+│        │ config.patch({providers, removeProviders})                     │
 │        ▼                     │            │                             │
 │ agents.providers             │            │                             │
 │   sbx-myproj-claude          │            │                             │
@@ -266,12 +267,40 @@ Paseo daemon (host)                         sbx sandbox "myproj"
 `sbx` client process is not propagated. The in-sandbox cwd must be set with `-w`. Since `command` is a
 **static array** written into config, it cannot interpolate the per-session cwd — hence a shim.
 
+Implemented at `shims/paseo-sbx-launch`, tested against a mock `sbx` binary (a real `sbx` is host-only,
+see §8). Two additions beyond the sketch above:
+
+- **A `$PASEO_SBX_WORKSPACES` cwd-membership guard**, checked with a colon-split prefix match before
+  ever invoking `sbx`. `command` has no separate cwd field — cwd is always the daemon's own `$PWD` at
+  spawn time — so a stale or wrong-sandbox provider pick would otherwise silently hand a foreign path to
+  `-w` instead of failing loudly.
+- **An inner `command -v "$PASEO_SBX_AGENT"` check**, run inside the sandbox before `exec`ing it. `sbx
+  ls --json`'s `agent` field is unverified (§10 Q1) and best-effort; this turns a sandbox that lied about
+  having the requested agent into a clear "no claude in sandbox" error instead of a hang.
+
 ```sh
 #!/usr/bin/env sh
-# paseo-sbx-launch — argv[0] of every generated provider entry.
-# $PASEO_SBX_SANDBOX / $PASEO_SBX_AGENT come from the provider entry's `env`.
 set -eu
-exec sbx exec -i -w "$PWD" "$PASEO_SBX_SANDBOX" "$PASEO_SBX_AGENT" "$@"
+
+matched=0
+old_ifs=$IFS
+IFS=:
+for workspace in $PASEO_SBX_WORKSPACES; do
+  case "$PWD" in
+    "$workspace" | "$workspace"/*) matched=1 ;;
+  esac
+done
+IFS=$old_ifs
+
+if [ "$matched" -ne 1 ]; then
+  served=$(echo "$PASEO_SBX_WORKSPACES" | tr ':' ' ')
+  echo "workspace $PWD is not served by sandbox $PASEO_SBX_SANDBOX (serves: $served)" >&2
+  exit 1
+fi
+
+exec sbx exec -i -w "$PWD" "$PASEO_SBX_SANDBOX" \
+  sh -c 'command -v "$1" >/dev/null || { echo "no $1 in sandbox" >&2; exit 127; }; shift; exec "$0" "$@"' \
+  "$PASEO_SBX_AGENT" "$@"
 ```
 
 Rationale for each piece:
@@ -280,7 +309,9 @@ Rationale for each piece:
   *"Flags match the behavior of `docker exec`"*). A TTY would corrupt JSON framing through echo and CRLF
   translation. **Confirmed working by the user against a live sbx.**
 - **`-w "$PWD"`** — the whole reason the shim exists.
-- **`exec`** so signals and the exit status pass through without an extra process layer.
+- **`exec`** replaces the shell process instead of forking a child — plain POSIX `exec`-builtin semantics,
+  not an sbx-specific behaviour, so it needed no separate verification — so the daemon's direct child stays
+  `sbx` itself, with no extra process layer for signals or the exit status to cross.
 - **Sandbox selected by env, not argv**, so one shim serves every generated entry and the provider
   entries stay uniform.
 
@@ -292,11 +323,16 @@ Rationale for each piece:
     "providers": {
       "sbx-myproj-claude": {
         "extends": "claude",
-        "label": "Claude · sbx:myproj",
-        "description": "Claude Code inside Docker sandbox \"myproj\" (/home/arek/Projects/myproj)",
-        "command": ["/home/arek/.paseo/plugins/sbx/paseo-sbx-launch"],
-        "env": { "PASEO_SBX_SANDBOX": "myproj", "PASEO_SBX_AGENT": "claude" },
-        "order": 100
+        "label": "myproj (sbx)",
+        "description": "Claude Code in sbx sandbox \"myproj\" — serves /home/arek/Projects/myproj",
+        "command": ["/home/arek/.paseo/plugins/sbx/shims/paseo-sbx-launch"],
+        "enabled": true,
+        "order": 1000,
+        "env": {
+          "PASEO_SBX_SANDBOX": "myproj",
+          "PASEO_SBX_AGENT": "claude",
+          "PASEO_SBX_WORKSPACES": "/home/arek/Projects/myproj"
+        }
       }
     }
   }
@@ -304,19 +340,56 @@ Rationale for each piece:
 ```
 
 Id must satisfy `/^[a-z][a-z0-9-]*$/` — sandbox names need sanitising, and collisions after sanitisation
-need resolving. Prefix every generated id with `sbx-` so the reconciler can identify what it owns.
+need resolving. Id format is `sbx-{sandbox-name}-{agent-name}` (the user's own confirmed choice): prefix
+every generated id with `sbx-` so the reconciler can identify what it owns, and suffix with the agent
+name so the id namespace stays unambiguous if a future sandbox generates entries for more than one
+agent. `order` is one shared constant (`GENERATED_PROVIDER_ORDER` in `reconcile.server.ts`) applied to
+every generated entry, so they form a stable block below the builtins rather than displacing the user's
+normal Claude entry.
 
 ### 5.3 Reconciler
 
-The plugin owns the `sbx-*` id namespace and nothing else.
+The plugin owns the `sbx-*` id namespace and nothing else. Implemented in `reconcile.server.ts`.
 
-- On plugin start, and on demand: `sbx ls --json` → desired set.
-- Diff against `config.get()`'s `agents.providers`, considering only `sbx-` prefixed ids.
-- `config.patch({ providers: { … } })` to add, update, or disable.
-- Filter out clone-mode sandboxes (§3.4) and non-running ones (or keep them and let `sbx exec` auto-start —
-  it does start a stopped sandbox, per `sbx_exec.yaml`).
-- Tear down in the contribution's returned cleanup, which Paseo awaits on reload/disable/remove
-  (`docs/plugins.md:159`).
+- **Trigger.** `PluginContext` (this repo's `paseo-plugin.d.ts:308-320`, matching upstream
+  `packages/plugin/src/contracts.ts:309-330`) has no separate plugin-activation server hook —
+  `contribute()`'s only argument is the plugin surface builder, and a `PaseoApi` handle only reaches
+  handler code via the `{ paseo }` second argument `plugin.handle` passes in. So reconciliation runs
+  from inside the `sbx.list-sandboxes` RPC handler itself, on every call — piggybacking on the client's
+  existing 5s poll (`main.client.tsx`) rather than a bespoke trigger.
+- **Shim path & verification.** The absolute shim path is derived from `config.get()`'s own
+  `plugins.sbx` entry (`{source: "directory", path}`), not hardcoded — so it's correct regardless of
+  where the plugin is installed. If `plugins.sbx` is missing or not a `directory` source, reconcile
+  fails soft with an error surfaced to the UI rather than guessing a path. Before use, the shim is
+  checked for the executable bit (`accessSync(X_OK)`); a fresh git checkout does not always preserve
+  it, so a failed check is followed by one `chmodSync(shimPath, 0o755)` attempt before falling back to
+  a "reinstall the plugin" error.
+- `sbx ls --json` → desired set (already fetched by the list RPC; reused, not re-run).
+- Diff against `config.get()`'s `providers` field — flat on the wire (`MutableDaemonConfig.providers`;
+  `agents.providers` at §3.2 is the *on-disk* config path, not the RPC response shape) — considering
+  only `sbx-` prefixed ids.
+- **What gets diffed.** `config.get()`'s `providers` record only echoes back `enabled`/
+  `additionalModels` per entry (`MutableDaemonConfigSchema.providers`, `messages.ts`), never the full
+  override — there is nothing in it to compare the desired `command`/`env`/`label` against.
+  Identity is diffed against `config.get()` — which `sbx-` ids are no longer desired — to compute
+  `removeProviders`. Content changes are caught separately: `reconcile.server.ts` keeps a JSON
+  signature of the last desired set + `removeProviders` it actually sent in module state, and skips
+  `config.patch()` when the newly computed signature is unchanged, so an unchanged sandbox list
+  doesn't re-send a `config.patch` on every 5s poll.
+- **Skip logic.** A sandbox reporting a non-`claude`, non-null `agent` is skipped (we already know it
+  can't run Claude Code); `agent: null` is *not* skipped, since the field is best-effort (§10 Q1) and the
+  shim's own `command -v` check turns a wrong guess into a clear launch-time error rather than a missing
+  provider. A sandbox with no `workspaces` is skipped — there is no `$PWD` the guard in §5.1 could ever
+  match. Clone-mode sandboxes (§3.4) are **not** filtered — the field to detect them is still unverified
+  (§10 Q5). Non-running sandboxes are **not** filtered either: `sbx exec` auto-starts a stopped sandbox
+  (`sbx_exec.yaml`), so leaving the provider in place and letting a launch attempt fail loudly with
+  sbx's own error is preferred over silently making a stopped sandbox disappear from the provider list.
+- **Teardown is a no-op.** `contribute()`'s returned cleanup runs with no arguments and no `paseo` handle
+  in scope — `PluginContext` exposes one only inside an RPC handler's context — so there is no way to
+  call `config.patch({ removeProviders })` from it. Provider entries this plugin generated are **not**
+  automatically removed when the plugin is disabled or uninstalled; they linger (pointing at a shim path
+  that may no longer exist) until the plugin is re-enabled and reconciles again, or a user removes them
+  by hand.
 
 **[UNVERIFIED]** The `sbx ls --json` schema is not documented anywhere in Docker's docs. Pin the fields
 actually consumed and fail soft on shape drift.
@@ -457,6 +530,22 @@ daemon and real sandboxes.
    have been in the sandbox (§4).
 3. **[UNVERIFIED]** Whether `sbx mcp` can carry Paseo's bearer-authenticated `/mcp/agents` endpoint, if the
    native tool catalog is wanted later (§6.2).
-4. Sandbox-name → provider-id sanitisation and collision policy (§5.2).
-5. Detection of clone-mode sandboxes from `sbx ls --json`, to exclude them (§3.4).
-6. Reconciler trigger policy: poll `sbx ls`, watch, or explicit refresh only.
+4. ~~Sandbox-name → provider-id sanitisation and collision policy (§5.2).~~ **RESOLVED.**
+   `reconcile.server.ts`'s `slugify` lowercases and collapses runs of non-`[a-z0-9]` to single dashes;
+   `resolveProviderIds` prefixes with `sbx-` and resolves collisions by appending `-2`, `-3`, … in
+   sandbox-**name** order (not discovery order, which `sbx ls` does not guarantee is stable), so the
+   winner of a collision is deterministic across runs.
+5. Detection of clone-mode sandboxes from `sbx ls --json`, to exclude them (§3.4). **Still open** — no
+   field for this was found in the (undocumented, §7) `sbx ls --json` output available for verification
+   from inside a sandbox; clone-mode sandboxes are not currently excluded from provider generation.
+6. ~~Reconciler trigger policy: poll `sbx ls`, watch, or explicit refresh only.~~ **RESOLVED**, and not by
+   choice — verified against `contracts.ts` that no other trigger point exists. See §5.3.
+7. **[UNVERIFIED]** In-sandbox process teardown. The shim's own `exec` (§5.1) means there is no
+   host-side process for the daemon's kill signal to stop at — `sbx exec`'s own client becomes the
+   daemon's direct child. Whether *that* client forwards a signal it receives into the corresponding
+   `docker exec`-style session inside the sandbox, or whether an exec'd process (and any children it
+   spawned) can be left running after Paseo considers the session gone, has not been verified against a
+   live sbx. The reconciler's own teardown (§5.3) only ever removes provider *config* entries — nothing
+   in this design reaps in-sandbox processes, so if signal forwarding doesn't hold, repeatedly
+   starting/killing sessions against the same long-lived sandbox could leak processes inside it with
+   nothing on the plugin side to notice.
