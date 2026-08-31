@@ -170,8 +170,8 @@ The provider then appends its own arguments to `args`. Config-level `command` al
 (`provider-config.ts:19`) is not exposed through config. Net effect:
 
 ```
-command: ["sbx","exec","-i","-w","<cwd>","<sandbox>","claude"]
-       → sbx exec -i -w <cwd> <sandbox> claude <paseo's own claude args>
+command: ["sbx","exec","-w","<cwd>","<sandbox>","claude"]
+       → sbx exec -w <cwd> <sandbox> claude <paseo's own claude args>
 ```
 
 `docs/custom-providers.md:334` blesses this shape as the "custom wrapper script" pattern.
@@ -255,7 +255,7 @@ Paseo daemon (host)                         sbx sandbox "myproj"
 └────────────┬─────────────────┘            │                             │
              │ spawn(shim, <claude args>)   │                             │
              ▼                              │                             │
-    paseo-sbx-launch  ──sbx exec -i -w $PWD─┼──► claude <args>            │
+    paseo-sbx-launch  ──sbx exec -w $PWD────┼──► claude <args>            │
                                             │      cwd = /home/arek/…     │
                                             │      (same path, virtiofs)  │
                                             └─────────────────────────────┘
@@ -274,9 +274,10 @@ see §8). Two additions beyond the sketch above:
   ever invoking `sbx`. `command` has no separate cwd field — cwd is always the daemon's own `$PWD` at
   spawn time — so a stale or wrong-sandbox provider pick would otherwise silently hand a foreign path to
   `-w` instead of failing loudly.
-- **An inner `command -v "$PASEO_SBX_AGENT"` check**, run inside the sandbox before `exec`ing it. `sbx
-  ls --json`'s `agent` field is unverified (§10 Q1) and best-effort; this turns a sandbox that lied about
-  having the requested agent into a clear "no claude in sandbox" error instead of a hang.
+- **An inner `command -v "$0"` check** (where `$0` is bound to `$PASEO_SBX_AGENT`), run inside the
+  sandbox before `exec`ing it. `sbx ls --json`'s `agent` field is unverified (§10 Q1) and best-effort;
+  this turns a sandbox that lied about having the requested agent into a clear "no claude in sandbox"
+  error instead of a hang.
 
 ```sh
 #!/usr/bin/env sh
@@ -298,16 +299,28 @@ if [ "$matched" -ne 1 ]; then
   exit 1
 fi
 
-exec sbx exec -i -w "$PWD" "$PASEO_SBX_SANDBOX" \
-  sh -c 'command -v "$1" >/dev/null || { echo "no $1 in sandbox" >&2; exit 127; }; shift; exec "$0" "$@"' \
+exec sbx exec -w "$PWD" "$PASEO_SBX_SANDBOX" \
+  sh -c 'command -v "$0" >/dev/null || { echo "no $0 in sandbox" >&2; exit 127; }; exec "$0" "$@"' \
   "$PASEO_SBX_AGENT" "$@"
 ```
 
 Rationale for each piece:
 
-- **`-i`, no `-t`.** `sbx exec` flags mirror `docker exec` verbatim (`data/sbx_cli/sbx_exec.yaml`:
+- **No `-i`, no `-t`.** `sbx exec` flags mirror `docker exec` verbatim (`data/sbx_cli/sbx_exec.yaml`:
   *"Flags match the behavior of `docker exec`"*). A TTY would corrupt JSON framing through echo and CRLF
-  translation. **Confirmed working by the user against a live sbx.**
+  translation — **confirmed working by the user against a live sbx.** `-i` was tried first (keep stdin
+  open even when not attached) but dropped after the user's own hang investigation (§10 Q7): `-i` keeps
+  the in-sandbox process's stdin open past client detach, so it never sees EOF and never exits on its
+  own if the client side goes away uncleanly. Without `-i`, stdin closes with the client, giving the
+  agent process a normal signal to exit — untested against a live orphan scenario yet, but the mechanism
+  is sound and this is now the default. See §10 Q7 for status.
+- **`command -v "$0"`, not `"$1"`.** `sh -c SCRIPT arg0 arg1…` binds the first trailing argument to `$0`
+  inside SCRIPT, not `$1` — `$1` is the *first CLI flag the agent itself receives* (e.g. `--print`), not
+  the agent binary name. An earlier version of this shim checked `$1` and then `shift`ed before the final
+  `exec "$0" "$@"`, which both misfired the check against a flag instead of the agent name (failing
+  almost every launch with a bogus "no `--print` in sandbox") and silently dropped the agent's first real
+  argument. Fixed by checking `$0` and dropping the `shift` — verified against a mock `sbx` binary
+  (both the old and new behavior reproduced locally, see commit history).
 - **`-w "$PWD"`** — the whole reason the shim exists.
 - **`exec`** replaces the shell process instead of forking a child — plain POSIX `exec`-builtin semantics,
   not an sbx-specific behaviour, so it needed no separate verification — so the daemon's direct child stays
@@ -470,7 +483,7 @@ All from `data/sbx_cli/*.yaml` and `content/manuals/ai/sandboxes/**`.
 | Need | Command |
 | --- | --- |
 | Enumerate sandboxes | `sbx ls --json` (also `-q` for names only; **no** `--format`) |
-| Run the agent | `sbx exec -i -w <cwd> <sandbox> claude <args…>` — starts a stopped sandbox first |
+| Run the agent | `sbx exec -w <cwd> <sandbox> claude <args…>` — starts a stopped sandbox first |
 | Create (no attach) | `sbx create --name <n> claude <path> [<path>:ro …]` |
 | Lifecycle | `sbx stop <n>` · `sbx run --name <n>` (there is no bare `sbx start`) · `sbx rm [-f] <n>` · `sbx prune` |
 | Ports | `sbx ports <n> [--json] [--publish [[HOST_IP:]HOST_PORT:]SANDBOX_PORT[/PROTO]]` |
@@ -540,12 +553,16 @@ daemon and real sandboxes.
    from inside a sandbox; clone-mode sandboxes are not currently excluded from provider generation.
 6. ~~Reconciler trigger policy: poll `sbx ls`, watch, or explicit refresh only.~~ **RESOLVED**, and not by
    choice — verified against `contracts.ts` that no other trigger point exists. See §5.3.
-7. **[UNVERIFIED]** In-sandbox process teardown. The shim's own `exec` (§5.1) means there is no
-   host-side process for the daemon's kill signal to stop at — `sbx exec`'s own client becomes the
-   daemon's direct child. Whether *that* client forwards a signal it receives into the corresponding
-   `docker exec`-style session inside the sandbox, or whether an exec'd process (and any children it
-   spawned) can be left running after Paseo considers the session gone, has not been verified against a
-   live sbx. The reconciler's own teardown (§5.3) only ever removes provider *config* entries — nothing
-   in this design reaps in-sandbox processes, so if signal forwarding doesn't hold, repeatedly
-   starting/killing sessions against the same long-lived sandbox could leak processes inside it with
-   nothing on the plugin side to notice.
+7. **[UNVERIFIED — mitigation applied, not yet confirmed]** In-sandbox process teardown. The shim's own
+   `exec` (§5.1) means there is no host-side process for the daemon's kill signal to stop at — `sbx
+   exec`'s own client becomes the daemon's direct child. Whether *that* client forwards a signal it
+   receives into the corresponding `docker exec`-style session inside the sandbox, or whether an exec'd
+   process (and any children it spawned) can be left running after Paseo considers the session gone, has
+   not been fully verified against a live sbx. The reconciler's own teardown (§5.3) only ever removes
+   provider *config* entries — nothing in this design reaps in-sandbox processes, so if signal forwarding
+   doesn't hold, repeatedly starting/killing sessions against the same long-lived sandbox could leak
+   processes inside it with nothing on the plugin side to notice. Based on the user's own investigation,
+   the shim was changed to drop `-i` (§5.1): `-i` keeps stdin open even past client detach, which is
+   plausibly what let a leaked process sit around indefinitely instead of seeing EOF and exiting on its
+   own. This is a hypothesis-driven mitigation, not a confirmed fix — it has not yet been tested through
+   a full leak scenario (daemon killed mid-session) against a live sbx.

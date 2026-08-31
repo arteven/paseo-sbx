@@ -24,10 +24,13 @@ if [ "$matched" -ne 1 ]; then
   exit 1
 fi
 
-# -i with no -t: a tty corrupts JSON framing (confirmed against a live sbx). The inner
-# `command -v` catches a sandbox whose `agent` field lied about having the requested agent
-# installed, turning a confusing hang into a clear "no claude in sandbox" error. Outer `exec`
-# keeps the daemon's direct child the `sbx` client, with no extra process layer.
-exec sbx exec -i -w "$PWD" "$PASEO_SBX_SANDBOX" \
-  sh -c 'command -v "$1" >/dev/null || { echo "no $1 in sandbox" >&2; exit 127; }; shift; exec "$0" "$@"' \
+# No `-i`: keeping stdin open past client detach is what let the agent process outlive its
+# session instead of seeing EOF and exiting on its own — see would_that_work.md §10 Q7. No
+# `-t` either: a tty corrupts JSON framing (confirmed against a live sbx). The inner
+# `command -v "$0"` catches a sandbox whose `agent` field lied about having the requested
+# agent installed, turning a confusing hang into a clear "no claude in sandbox" error — it
+# checks $0 (the agent binary), not $1 (the agent's own first CLI flag). Outer `exec` keeps
+# the daemon's direct child the `sbx` client, with no extra process layer.
+exec sbx exec -w "$PWD" "$PASEO_SBX_SANDBOX" \
+  sh -c 'command -v "$0" >/dev/null || { echo "no $0 in sandbox" >&2; exit 127; }; exec "$0" "$@"' \
   "$PASEO_SBX_AGENT" "$@"
