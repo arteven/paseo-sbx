@@ -309,11 +309,11 @@ Rationale for each piece:
 - **No `-i`, no `-t`.** `sbx exec` flags mirror `docker exec` verbatim (`data/sbx_cli/sbx_exec.yaml`:
   *"Flags match the behavior of `docker exec`"*). A TTY would corrupt JSON framing through echo and CRLF
   translation — **confirmed working by the user against a live sbx.** `-i` was tried first (keep stdin
-  open even when not attached) but dropped after the user's own hang investigation (§10 Q7): `-i` keeps
-  the in-sandbox process's stdin open past client detach, so it never sees EOF and never exits on its
-  own if the client side goes away uncleanly. Without `-i`, stdin closes with the client, giving the
-  agent process a normal signal to exit — untested against a live orphan scenario yet, but the mechanism
-  is sound and this is now the default. See §10 Q7 for status.
+  open even when not attached) but dropped after the user's own hang investigation (§10 Q7, now
+  resolved): `-i` was keeping the in-sandbox process's stdin open past client detach, so a leaked process
+  never saw EOF and never exited on its own if the client side went away uncleanly. Without `-i`, stdin
+  closes with the client, and the agent process exits with it — **confirmed working** against repeated
+  start/kill cycles on a live sbx.
 - **`command -v "$0"`, not `"$1"`.** `sh -c SCRIPT arg0 arg1…` binds the first trailing argument to `$0`
   inside SCRIPT, not `$1` — `$1` is the *first CLI flag the agent itself receives* (e.g. `--print`), not
   the agent binary name. An earlier version of this shim checked `$1` and then `shift`ed before the final
@@ -553,16 +553,12 @@ daemon and real sandboxes.
    from inside a sandbox; clone-mode sandboxes are not currently excluded from provider generation.
 6. ~~Reconciler trigger policy: poll `sbx ls`, watch, or explicit refresh only.~~ **RESOLVED**, and not by
    choice — verified against `contracts.ts` that no other trigger point exists. See §5.3.
-7. **[UNVERIFIED — mitigation applied, not yet confirmed]** In-sandbox process teardown. The shim's own
-   `exec` (§5.1) means there is no host-side process for the daemon's kill signal to stop at — `sbx
-   exec`'s own client becomes the daemon's direct child. Whether *that* client forwards a signal it
-   receives into the corresponding `docker exec`-style session inside the sandbox, or whether an exec'd
-   process (and any children it spawned) can be left running after Paseo considers the session gone, has
-   not been fully verified against a live sbx. The reconciler's own teardown (§5.3) only ever removes
-   provider *config* entries — nothing in this design reaps in-sandbox processes, so if signal forwarding
-   doesn't hold, repeatedly starting/killing sessions against the same long-lived sandbox could leak
-   processes inside it with nothing on the plugin side to notice. Based on the user's own investigation,
-   the shim was changed to drop `-i` (§5.1): `-i` keeps stdin open even past client detach, which is
-   plausibly what let a leaked process sit around indefinitely instead of seeing EOF and exiting on its
-   own. This is a hypothesis-driven mitigation, not a confirmed fix — it has not yet been tested through
-   a full leak scenario (daemon killed mid-session) against a live sbx.
+7. ~~In-sandbox process teardown.~~ **RESOLVED**, by the user against a live sbx. The shim's own `exec`
+   (§5.1) means there is no host-side process for the daemon's kill signal to stop at — `sbx exec`'s own
+   client becomes the daemon's direct child — so the open question was whether an exec'd process (and any
+   children it spawned) could be left running after Paseo considers the session gone. Dropping `-i` (§5.1)
+   fixed it: `-i` was keeping stdin open past client detach, so a leaked process never saw EOF and never
+   exited on its own; without `-i`, stdin closes with the client and the in-sandbox process exits with it.
+   **Verified working** — repeated start/kill cycles against the same sandbox no longer leak processes.
+   The reconciler's own teardown (§5.3) still only ever removes provider *config* entries; process cleanup
+   is handled entirely by this stdin-EOF behavior, not by the reconciler.

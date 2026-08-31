@@ -4,14 +4,18 @@ A [Paseo](https://github.com/getpaseo/paseo) plugin that manages [Docker `sbx`](
 sandboxes and exposes each one as a Paseo agent provider — so picking "Claude · sbx:myproj" in Paseo runs
 Claude Code inside that sandbox, against the same working directory.
 
-**Status: reconciler implemented, not yet verified against a live daemon.** The main surface lists
-sandboxes from `sbx ls --json` (name, status, agent, workspaces, ports), polling every 5s, and on every
-poll reconciles that list into `agents.providers.sbx-*` entries via `paseo.config.patch()`, each pointed
-at the committed launcher shim (`shims/paseo-sbx-launch`). Neither `sbx` nor `paseo` is installed inside
-a development sandbox (see `docs/research/would_that_work.md` §8), so this has been typechecked, and
-`node:test` tests were written for its pure logic, but neither the tests nor the plugin have been run
-end-to-end — this dev sandbox's Node build lacks TypeScript-stripping support, so `npm test` must be
-run on the host.
+**Status: reconciler implemented; the shim's process lifecycle is confirmed on a live sbx, the rest of
+the pipeline is not yet.** The main surface lists sandboxes from `sbx ls --json` (name, status, agent,
+workspaces, ports), polling every 5s, and on every poll reconciles that list into `agents.providers.sbx-*`
+entries via `paseo.config.patch()`, each pointed at the committed launcher shim
+(`shims/paseo-sbx-launch`). The shim's cwd guard and in-sandbox process teardown (no leaked/hung `claude`
+process across repeated start/kill cycles — see `docs/research/would_that_work.md` §10 Q7) have been
+verified against a live sbx; the reconciler's own `config.patch()` writes and the generated provider
+entries have not yet been exercised end-to-end against a live daemon. Neither `sbx` nor `paseo` is
+installed inside a development sandbox (see `docs/research/would_that_work.md` §8), so this has been
+typechecked, and `node:test` tests were written for its pure logic, but the tests themselves haven't run
+either — this dev sandbox's Node build lacks TypeScript-stripping support, so `npm test` must be run on
+the host.
 
 ## How it works
 
@@ -22,7 +26,7 @@ generates provider entries at runtime:
 - A reconciler writes `agents.providers.sbx-*` entries through `paseo.config.patch()` — runtime-mutable,
   no daemon restart.
 - Each entry's `command` points at a small launcher shim that verifies `$PWD` is one of the sandbox's
-  workspaces, then execs `sbx exec -i -w "$PWD" "$SANDBOX" claude "$@"`.
+  workspaces, then execs `sbx exec -w "$PWD" "$SANDBOX" claude "$@"`.
 
 It works because sbx mounts the host workspace at the **identical absolute path** inside the sandbox, so
 the daemon (on the host) and the agent (in the sandbox) agree on `cwd`.
