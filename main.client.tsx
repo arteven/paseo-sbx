@@ -1,8 +1,6 @@
 import type { PluginSurfaceProps, PluginTheme } from "@getpaseo/plugin";
 import { useRpc } from "@getpaseo/plugin";
-import type { ToastVariant } from "@getpaseo/plugin/react-native";
-import { Modal, useToast } from "@getpaseo/plugin/react-native";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
 import type { ActionSummary, RunActionOutcome } from "./actions.shared";
 import { runActionRpc } from "./actions.shared";
@@ -30,11 +28,28 @@ const POLL_INTERVAL_MS = 5000;
 // distinctly instead of calling it a failure. See actions.server.ts.
 const ACTION_TIMEOUT_MS = 30000;
 
-// paseo-plugin.d.ts is generated fresh per project and can outrun what the *installed* app
-// runtime actually injects (see docs/research/ui.md's note on `Icon`) — guard rather than trust
-// the types, same as the rest of this surface does.
-const hasToast = typeof useToast === "function";
-const hasModal = typeof Modal !== "undefined";
+// How long a toast stays up before it self-dismisses.
+const TOAST_DURATION_MS = 4000;
+
+// `@getpaseo/plugin/react-native`'s `Modal`/`useToast` are declared in the generated
+// paseo-plugin.d.ts but the installed app runtime can lag it entirely — not just missing an
+// export (the `Icon` case docs/research/ui.md warns about), but rejecting the whole module
+// specifier at import time: "Module ... is not available in plugin client code", thrown before
+// any runtime guard on the import ever runs, taking the entire bundle down on both platforms.
+// So toast/modal are hand-rolled below from `react-native` primitives only, which this surface
+// already depends on and knows are safe.
+type ToastVariant = "success" | "error" | "warning";
+
+function toastVariantColor(variant: ToastVariant, colors: PluginColors): string {
+  if (variant === "success") return colors.statusSuccess;
+  if (variant === "error") return colors.statusDanger;
+  return colors.statusWarning;
+}
+
+// No design token exists for a modal backdrop (docs/research/ui.md doesn't cover one — this
+// surface had none before), and a dimming backdrop is conventionally black regardless of theme
+// rather than derived from `resolvePluginColors()`.
+const MODAL_BACKDROP_COLOR = "rgba(0, 0, 0, 0.5)";
 
 function actionKey(sandboxName: string, actionIndex: number): string {
   return `${sandboxName}::${actionIndex}`;
@@ -98,6 +113,7 @@ function useStyles(theme: PluginTheme) {
       // app does not branch these numbers on compact — `isCompactLayout` there drives navigation,
       // not spacing — so this surface does not read `layout.compact` either. On a phone the cap
       // simply never binds.
+      root: { flex: 1 },
       screen: { flex: 1, backgroundColor: colors.surface0 },
       content: {
         padding: spacing[4],
@@ -174,6 +190,52 @@ function useStyles(theme: PluginTheme) {
       },
       actionButtonPending: { opacity: opacity.pressed },
       actionButtonText: { color: colors.foreground, fontSize: fontSize.sm },
+
+      // Hand-rolled in place of the SDK's `useToast` — see the note above `ToastVariant`. Sits at
+      // the bottom of the screen, above everything else, and doesn't block interaction beneath it.
+      toast: {
+        position: "absolute" as const,
+        left: spacing[4],
+        right: spacing[4],
+        bottom: spacing[4],
+        borderRadius: borderRadius.lg,
+        borderWidth: 1,
+        backgroundColor: colors.surface1,
+        paddingVertical: spacing[3],
+        paddingHorizontal: spacing[4],
+      },
+      toastText: { color: colors.foreground, fontSize: fontSize.sm },
+
+      // Hand-rolled in place of the SDK's `Modal` — see the note above `ToastVariant`.
+      modalBackdrop: {
+        position: "absolute" as const,
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        backgroundColor: MODAL_BACKDROP_COLOR,
+        alignItems: "center" as const,
+        justifyContent: "center" as const,
+        padding: spacing[4],
+      },
+      modalCard: {
+        width: "100%" as const,
+        maxWidth: CONTENT_MAX_WIDTH,
+        maxHeight: "80%" as const,
+        backgroundColor: colors.surface1,
+        borderRadius: borderRadius.xl,
+        borderWidth: 1,
+        borderColor: colors.border,
+        padding: spacing[4],
+      },
+      modalTitle: { color: colors.foreground, fontSize: fontSize.base, fontWeight: fontWeight.medium },
+      modalCloseButton: {
+        alignSelf: "flex-end" as const,
+        marginTop: spacing[3],
+        paddingVertical: spacing[1],
+        paddingHorizontal: spacing[2],
+      },
+      modalCloseButtonText: { color: colors.foregroundMuted, fontSize: fontSize.sm },
 
       // ui/modal.tsx-shaped: plain text sections, no monospace token exists in theme.shared.ts to
       // reach for.
@@ -350,7 +412,6 @@ function SandboxRow({
 export function MainSurface({ theme }: PluginSurfaceProps) {
   const listSandboxes = useRpc(listSandboxesRpc);
   const callRunAction = useRpc(runActionRpc);
-  const toast = hasToast ? useToast() : null;
   const [sandboxes, setSandboxes] = useState<SbxSandbox[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reconcile, setReconcile] = useState<ReconcileOutcome | null>(null);
@@ -358,14 +419,21 @@ export function MainSurface({ theme }: PluginSurfaceProps) {
   const [actionsWarning, setActionsWarning] = useState<string | null>(null);
   const [pendingKeys, setPendingKeys] = useState<ReadonlySet<string>>(new Set());
   const [modal, setModal] = useState<{ title: string; stdout: string; stderr: string } | null>(null);
+  const [toast, setToast] = useState<{ text: string; variant: ToastVariant } | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const styles = useStyles(theme);
 
-  const showToast = useCallback(
-    (message: string, variant: ToastVariant) => {
-      if (toast) toast.show(message, { variant });
-    },
-    [toast],
-  );
+  const showToast = useCallback((message: string, variant: ToastVariant) => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast({ text: message, variant });
+    toastTimer.current = setTimeout(() => setToast(null), TOAST_DURATION_MS);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimer.current) clearTimeout(toastTimer.current);
+    };
+  }, []);
 
   const setPending = useCallback((key: string, isPending: boolean) => {
     setPendingKeys((current) => {
@@ -476,102 +544,131 @@ export function MainSurface({ theme }: PluginSurfaceProps) {
   }, [sandboxes, reconcile]);
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-      <View style={styles.sectionHeader}>
-        <Text style={styles.sectionHeaderTitle}>{summary}</Text>
-        <Pressable
-          accessibilityRole="button"
-          onPress={refresh}
-          hitSlop={4}
-          style={({ pressed }) => [
-            styles.sectionHeaderLink,
-            pressed ? { opacity: opacity.pressed } : null,
-          ]}
-        >
-          <Text style={styles.sectionHeaderLinkText}>Refresh</Text>
-        </Pressable>
-      </View>
-
-      {error ? (
-        <View style={styles.alert} accessibilityRole="alert">
-          <Text style={styles.alertTitle}>Could not read sandboxes</Text>
-          <Text style={styles.alertDescription}>{error}</Text>
+    <View style={styles.root}>
+      <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionHeaderTitle}>{summary}</Text>
+          <Pressable
+            accessibilityRole="button"
+            onPress={refresh}
+            hitSlop={4}
+            style={({ pressed }) => [
+              styles.sectionHeaderLink,
+              pressed ? { opacity: opacity.pressed } : null,
+            ]}
+          >
+            <Text style={styles.sectionHeaderLinkText}>Refresh</Text>
+          </Pressable>
         </View>
-      ) : null}
 
-      {reconcile?.error ? (
-        <View style={styles.alertWarning} accessibilityRole="alert">
-          <Text style={styles.alertWarningTitle}>Could not update providers</Text>
-          <Text style={styles.alertDescription}>{reconcile.error}</Text>
-        </View>
-      ) : null}
+        {error ? (
+          <View style={styles.alert} accessibilityRole="alert">
+            <Text style={styles.alertTitle}>Could not read sandboxes</Text>
+            <Text style={styles.alertDescription}>{error}</Text>
+          </View>
+        ) : null}
 
-      {actionsWarning ? (
-        <View style={styles.alertWarning} accessibilityRole="alert">
-          <Text style={styles.alertWarningTitle}>Could not load some actions</Text>
-          <Text style={styles.alertDescription}>{actionsWarning}</Text>
-        </View>
-      ) : null}
+        {reconcile?.error ? (
+          <View style={styles.alertWarning} accessibilityRole="alert">
+            <Text style={styles.alertWarningTitle}>Could not update providers</Text>
+            <Text style={styles.alertDescription}>{reconcile.error}</Text>
+          </View>
+        ) : null}
 
-      {reconcile && reconcile.skipped.length > 0 ? (
-        <View style={styles.skipNote}>
-          {reconcile.skipped.map((skip) => (
-            <Text key={skip.sandbox} style={styles.skipNoteText} numberOfLines={1}>
-              {skip.sandbox} not mirrored: {skip.reason}
+        {actionsWarning ? (
+          <View style={styles.alertWarning} accessibilityRole="alert">
+            <Text style={styles.alertWarningTitle}>Could not load some actions</Text>
+            <Text style={styles.alertDescription}>{actionsWarning}</Text>
+          </View>
+        ) : null}
+
+        {reconcile && reconcile.skipped.length > 0 ? (
+          <View style={styles.skipNote}>
+            {reconcile.skipped.map((skip) => (
+              <Text key={skip.sandbox} style={styles.skipNoteText} numberOfLines={1}>
+                {skip.sandbox} not mirrored: {skip.reason}
+              </Text>
+            ))}
+          </View>
+        ) : null}
+
+        {sandboxes === null && !error ? (
+          <View style={styles.empty}>
+            <ActivityIndicator color={styles.colors.foregroundMuted} />
+          </View>
+        ) : null}
+
+        {sandboxes !== null && sandboxes.length === 0 && !error ? (
+          <View style={styles.empty}>
+            <Text style={styles.emptyTitle}>No sandboxes yet</Text>
+            <Text style={styles.emptyDescription}>
+              Create one on the host with sbx create and it appears here.
             </Text>
-          ))}
+          </View>
+        ) : null}
+
+        {sandboxes !== null && sandboxes.length > 0 ? (
+          <View style={styles.card}>
+            {sandboxes.map((sandbox, index) => (
+              <SandboxRow
+                key={sandbox.id}
+                sandbox={sandbox}
+                divider={index > 0}
+                actions={actions}
+                pendingKeys={pendingKeys}
+                onRunAction={runAction}
+                styles={styles}
+              />
+            ))}
+          </View>
+        ) : null}
+      </ScrollView>
+
+      {toast ? (
+        <View style={[styles.toast, { borderColor: toastVariantColor(toast.variant, styles.colors) }]}>
+          <Text style={styles.toastText}>{toast.text}</Text>
         </View>
       ) : null}
 
-      {sandboxes === null && !error ? (
-        <View style={styles.empty}>
-          <ActivityIndicator color={styles.colors.foregroundMuted} />
+      {modal ? (
+        <View style={styles.modalBackdrop}>
+          <Pressable
+            style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }}
+            accessibilityRole="button"
+            onPress={() => setModal(null)}
+          />
+          <View style={styles.modalCard}>
+            <ScrollView>
+              <Text style={styles.modalTitle} numberOfLines={1}>
+                {modal.title}
+              </Text>
+              {modal.stdout.trim() ? (
+                <View style={styles.modalSection}>
+                  <Text style={styles.modalLabel}>stdout</Text>
+                  <Text style={styles.modalText}>{modal.stdout.trim()}</Text>
+                </View>
+              ) : null}
+              {modal.stderr.trim() ? (
+                <View style={styles.modalSection}>
+                  <Text style={styles.modalLabel}>stderr</Text>
+                  <Text style={styles.modalText}>{modal.stderr.trim()}</Text>
+                </View>
+              ) : null}
+              <Pressable
+                accessibilityRole="button"
+                hitSlop={4}
+                onPress={() => setModal(null)}
+                style={({ pressed }) => [
+                  styles.modalCloseButton,
+                  pressed ? { opacity: opacity.pressed } : null,
+                ]}
+              >
+                <Text style={styles.modalCloseButtonText}>Close</Text>
+              </Pressable>
+            </ScrollView>
+          </View>
         </View>
       ) : null}
-
-      {sandboxes !== null && sandboxes.length === 0 && !error ? (
-        <View style={styles.empty}>
-          <Text style={styles.emptyTitle}>No sandboxes yet</Text>
-          <Text style={styles.emptyDescription}>
-            Create one on the host with sbx create and it appears here.
-          </Text>
-        </View>
-      ) : null}
-
-      {sandboxes !== null && sandboxes.length > 0 ? (
-        <View style={styles.card}>
-          {sandboxes.map((sandbox, index) => (
-            <SandboxRow
-              key={sandbox.id}
-              sandbox={sandbox}
-              divider={index > 0}
-              actions={actions}
-              pendingKeys={pendingKeys}
-              onRunAction={runAction}
-              styles={styles}
-            />
-          ))}
-        </View>
-      ) : null}
-
-      {hasModal && modal ? (
-        <Modal title={modal.title} open onOpenChange={(open) => (!open ? setModal(null) : null)}>
-          <Modal.Content>
-            {modal.stdout.trim() ? (
-              <View style={styles.modalSection}>
-                <Text style={styles.modalLabel}>stdout</Text>
-                <Text style={styles.modalText}>{modal.stdout.trim()}</Text>
-              </View>
-            ) : null}
-            {modal.stderr.trim() ? (
-              <View style={styles.modalSection}>
-                <Text style={styles.modalLabel}>stderr</Text>
-                <Text style={styles.modalText}>{modal.stderr.trim()}</Text>
-              </View>
-            ) : null}
-          </Modal.Content>
-        </Modal>
-      ) : null}
-    </ScrollView>
+    </View>
   );
 }

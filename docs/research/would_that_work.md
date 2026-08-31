@@ -470,13 +470,24 @@ stay fresh on the same 5s cadence with no extra loading state.
 message types and no progress/chunk message, and `DaemonClient`'s terminal RPCs are unreachable from
 plugins) — so this is request/response only. Success shows a toast with stdout's first non-empty line
 (collapsed, truncated), falling back to "done" if the command was silent. Failure shows an error toast
-plus a `Modal` with stdout/stderr, unless both are empty, in which case the modal is suppressed and
+plus a modal with stdout/stderr, unless both are empty, in which case the modal is suppressed and
 the toast alone carries the exit code — an empty modal is pure friction. The RPC's 30s host-side
 ceiling is its own outcome, not a failure: `execFile` giving up does not kill the still-running
 command, so the client races its own 30s timer against the RPC and reports "still running" rather than
 calling it a failure. Accepted trade-offs, eyes open: no `when` gating (a "Stop" button can appear on
 an already-stopped sandbox and just fail on press), no `confirm` step even for destructive actions,
 and the stale-index race is mitigated (bounds-check + clean error) rather than eliminated.
+
+Toast and modal are **hand-rolled from plain `react-native` primitives** (`View`/`Text`/`Pressable`/
+`ScrollView`), not `@getpaseo/plugin/react-native`'s `Modal`/`useToast`. The original implementation
+used the SDK versions, guarded with a `typeof` check per CLAUDE.md's `Icon` precedent — but on a live
+app (both mobile and desktop, Paseo 0.6.1) the import itself throws at client-bundle load, synchronously,
+before any runtime guard can run: `Module "@getpaseo/plugin/react-native" is not available in plugin
+client code`. That's a stronger failure than the `Icon` case (an unavailable *export* resolving to
+`undefined`) — here the whole *module specifier* is outside the app's client-code require allowlist,
+so the entire plugin (surface, sidebar item, RPC handlers) vanished on both platforms, the same
+blast radius as the async/generator hazard but from an unrelated cause. **Confirmed live and fixed**
+by dropping the SDK import entirely.
 
 **Still unverified in this dev sandbox** (see §8): the execution path itself — shell invocation, env
 injection, `cwd` resolution — needs a real host with `sbx`/`paseo` installed. Only the pure config
@@ -630,5 +641,14 @@ daemon and real sandboxes.
    `cwd` resolution against a real sandbox's `workspaces[0]`, `SBX_SANDBOX_NAME` injection, and the
    30s client-side timeout race — has not been exercised against a live daemon from this dev sandbox
    (§8). Needs a pass on the host with a real `sbx-actions.json` before this is considered confirmed.
+9. ~~`@getpaseo/plugin/react-native`'s `Modal`/`useToast` availability at runtime.~~ **RESOLVED** —
+   the opposite way expected. The user reported the whole plugin (sidebar item included) missing on
+   both mobile and desktop right after this feature shipped; reproduced by compiling the actual
+   client bundle (`compilePlugin`) and confirmed by the user's own error: `Module
+   "@getpaseo/plugin/react-native" is not available in plugin client code`, thrown at import time,
+   before the `typeof` runtime guard the code had could run. Fixed by dropping the SDK import and
+   hand-rolling toast/modal from plain `react-native` primitives instead (§5.5). Recompiled and
+   confirmed the client bundle no longer references the module specifier; the fix itself has not yet
+   been confirmed against a live app by the user.
    The reconciler's own teardown (§5.3) still only ever removes provider *config* entries; process cleanup
    is handled entirely by this stdin-EOF behavior, not by the reconciler.
