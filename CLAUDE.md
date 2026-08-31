@@ -12,9 +12,10 @@ become a historical artifact.
 Locked decisions: `extends: "claude"` (not `"acp"`), user-managed sandboxes (the plugin does not
 auto-create one per workspace).
 
-`docs/research/ui.md` is the styling reference for anything rendered in a `*.client.tsx` surface —
-Paseo's own spacing, type, row/card, status and empty-state conventions, extracted from the app and
-from `plugin-examples/`, with the numbers to hand-copy. Follow it instead of inventing a look.
+`docs/research/ui.md` is the styling reference for anything rendered in a `*.client.tsx` surface. It
+points at the upstream files that own each convention rather than copying them, and it ends in a
+checklist. Follow it instead of inventing a look. Tokens live in `theme.shared.ts` — read colours
+through `resolvePluginColors()` and never inline a raw number at a call site.
 
 ## Environment
 
@@ -36,13 +37,16 @@ the docs drift (e.g. `docs/plugins.md:56` claims the SDK is unpublished; it is o
 - All `sbx` shelling lives behind `plugin.handle(...)` RPCs in `*.server.ts`. The client bundle runs in
   the app with a strict require allowlist and has no `node:*`.
 - RPC handlers have a 30s timeout.
-- The plugin contributes **no Command Center item**. On mobile the Command Center is a `@gorhom`
-  bottom-sheet modal whose `select()` closes the sheet and runs the item's action in the same commit
-  (`command-center.tsx:311-316`); navigating from there throws `useBottomSheetInternal`. The surface
-  worked on mobile before the item was contributed and the crash appeared with it, so the
-  contribution is dropped rather than worked around. Deferring `openSurface` by a tick was written
-  but never tested on a device — treat it as an untried hypothesis, not a known-bad fix. Do not
-  re-add the item without testing on a phone.
+- The plugin contributes **no Command Center item** — dropped in `1cefeb9` after a mobile crash, and
+  still out because nobody has retested on a phone. The recorded rationale (that `select()` closing
+  the `@gorhom` sheet and navigating in the same commit throws `useBottomSheetInternal`) is **not
+  supported by the app source**: Paseo's own global actions in `command-center/root-registration.tsx`
+  call `router.push` synchronously from that same `select()`. So the cause is unknown, not
+  understood. Two facts that do hold: `PluginCommandCenterActions`
+  (`plugins/command-center/registration.tsx`) yields nothing when `serverId` is null, so the item is
+  absent off a `/h/<id>` route regardless; and the **sidebar** item is a separate mechanism that is
+  fine on mobile — `MobileSidebar` renders `PluginSidebarItems` at every tag from v0.6.0 on. Do not
+  re-add the Command Center item without testing on a phone.
 - The SDK's runtime surface is whatever the *installed app* injects, which can lag the generated
   `paseo-plugin.d.ts` — the host-rendered `Icon` type exists in the scaffold but not in the runtime of
   Paseo < 0.7.0-beta.1, and rendering an undefined import is React error #130. Guard newer SDK exports
