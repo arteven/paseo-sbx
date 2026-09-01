@@ -30,10 +30,11 @@ test("resolveProviderIds resolves slug collisions deterministically by name orde
     sandbox({ name: "My Proj", id: "second" }),
     sandbox({ name: "my-proj", id: "first" }),
   ]);
-  // "My Proj" and "my-proj" both slugify to "my-proj"; name-order (localeCompare) picks the
-  // base id winner independent of the array's input order.
-  assert.equal(ids.get("first"), "sbx-my-proj-claude");
-  assert.equal(ids.get("second"), "sbx-my-proj-claude-2");
+  // "My Proj" and "my-proj" both slugify to "my-proj". Name order picks the base-id winner
+  // independent of the array's input order, and it is code-unit order — so "My Proj" wins on "M"
+  // < "m", the same way on every machine, rather than deferring to the daemon's collation.
+  assert.equal(ids.get("second"), "sbx-my-proj-claude");
+  assert.equal(ids.get("first"), "sbx-my-proj-claude-2");
 });
 
 test("buildDesiredProviders skips a sandbox reporting a non-claude agent", () => {

@@ -4,6 +4,9 @@ import type { PaseoApi } from "@getpaseo/client";
 import type { ProviderOverride } from "@getpaseo/protocol/provider-config";
 import type { ReconcileOutcome, ReconcileSkip, SbxSandbox } from "./sandboxes.shared";
 
+// Must match paseo-plugin.json's id: it is the key the daemon files this plugin's install path
+// under, and the only way to learn where the shim below actually lives on disk.
+const PLUGIN_ID = "paseo-sbx";
 const PROVIDER_PREFIX = "sbx-";
 const SHIM_RELATIVE_PATH = "shims/paseo-sbx-launch";
 const AGENT_NAME = "claude";
@@ -26,12 +29,20 @@ export function slugify(name: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
+// Code-unit order, never localeCompare: the point of sorting here is that the same sandbox wins
+// the same id on every run and on every machine, and localeCompare answers to the daemon's locale
+// and ICU build. A flipped winner would rename a provider entry, so the reconciler would churn a
+// remove + add for two sandboxes that never changed.
+function byCodeUnit(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 // Ordered by sandbox name (not discovery order, which sbx does not guarantee is stable) so that
 // which sandbox wins a slug collision is deterministic across reconcile runs.
 export function resolveProviderIds(sandboxes: readonly SbxSandbox[]): Map<string, string> {
   const ids = new Map<string, string>();
   const used = new Set<string>();
-  const ordered = [...sandboxes].sort((a, b) => a.name.localeCompare(b.name));
+  const ordered = [...sandboxes].sort((a, b) => byCodeUnit(a.name, b.name));
 
   for (const sandbox of ordered) {
     const base = `${PROVIDER_PREFIX}${slugify(sandbox.name)}-${AGENT_NAME}`;
@@ -145,7 +156,7 @@ let lastPatchSignature: string | null = null;
 
 function computeSignature(providers: Record<string, ProviderOverride>, removeProviders: string[]): string {
   return JSON.stringify({
-    providers: Object.fromEntries(Object.entries(providers).sort(([a], [b]) => a.localeCompare(b))),
+    providers: Object.fromEntries(Object.entries(providers).sort(([a], [b]) => byCodeUnit(a, b))),
     removeProviders: [...removeProviders].sort(),
   });
 }
@@ -163,9 +174,12 @@ export async function reconcileProviders(
     return { ...empty, error: `Failed to read plugin config: ${errorMessage(err)}` };
   }
 
-  const pluginSource = current.plugins?.sbx;
+  const pluginSource = current.plugins?.[PLUGIN_ID];
   if (!pluginSource || pluginSource.source !== "directory") {
-    return { ...empty, error: "This plugin's own install path is not in the daemon config (plugins.sbx)." };
+    return {
+      ...empty,
+      error: `This plugin's own install path is not in the daemon config (plugins.${PLUGIN_ID}).`,
+    };
   }
 
   const shimPath = path.join(pluginSource.path, SHIM_RELATIVE_PATH);

@@ -2,7 +2,7 @@ import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import { ActionSummarySchema } from "./actions.shared";
 
-// Field set is pinned to what §5.4 of docs/research/would_that_work.md calls out as consumed —
+// Field set is pinned to what docs/design.md calls out as consumed —
 // `sbx ls --json` has no documented schema, so unknown/extra fields are ignored rather than
 // rejected, and malformed entries are dropped instead of failing the whole list.
 export const SbxSandboxPortSchema = z.object({
@@ -28,7 +28,7 @@ export const ReconcileSkipSchema = z.object({
 });
 export type ReconcileSkip = z.output<typeof ReconcileSkipSchema>;
 
-// Reported so the UI never has to guess why a sandbox has no provider — see docs/research/would_that_work.md.
+// Reported so the UI never has to guess why a sandbox has no provider — see docs/design.md.
 export const ReconcileOutcomeSchema = z.object({
   generated: z.array(z.string()),
   removed: z.array(z.string()),

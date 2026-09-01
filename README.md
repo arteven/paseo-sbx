@@ -1,46 +1,68 @@
 # paseo-sbx
 
-A [Paseo](https://github.com/getpaseo/paseo) plugin that manages [Docker `sbx`](https://docs.docker.com/ai/sandboxes/)
-sandboxes and exposes each one as a Paseo agent provider — so picking "Claude · sbx:myproj" in Paseo runs
-Claude Code inside that sandbox, against the same working directory.
+A [Paseo](https://github.com/getpaseo/paseo) plugin that exposes [Docker `sbx`](https://docs.docker.com/ai/sandboxes/)
+sandboxes as Paseo agent providers. Pick "myproj (sbx)" in Paseo's provider picker and Claude Code runs
+inside that sandbox, against the same working directory you were already in.
 
-**Status: reconciler implemented; the shim's process lifecycle is confirmed on a live sbx, the rest of
-the pipeline is not yet.** The main surface lists sandboxes from `sbx ls --json` (name, status, agent,
-workspaces, ports), polling every 5s, and on every poll reconciles that list into `agents.providers.sbx-*`
-entries via `paseo.config.patch()`, each pointed at the committed launcher shim
-(`shims/paseo-sbx-launch`). The shim's cwd guard and in-sandbox process teardown (no leaked/hung `claude`
-process across repeated start/kill cycles — see `docs/research/would_that_work.md` §10 Q7) have been
-verified against a live sbx; the reconciler's own `config.patch()` writes and the generated provider
-entries have not yet been exercised end-to-end against a live daemon. Each sandbox row also renders
-user-configured [custom action buttons](#custom-sandbox-actions), but that execution path is likewise
-unverified against a live daemon (`docs/research/would_that_work.md` §10 Q8). Neither `sbx` nor `paseo`
-is installed inside a development sandbox (see `docs/research/would_that_work.md` §8), so this has been
-typechecked, and `node:test` tests were written for its pure logic, but the tests themselves haven't run
-either — this dev sandbox's Node build lacks TypeScript-stripping support, so `npm test` must be run on
-the host.
+It works because sbx mounts the host workspace at the *identical* absolute path inside the sandbox, so
+the daemon (on the host) and the agent (in the sandbox) agree on `cwd`.
+
+## Install
+
+Plugins run unsandboxed on the daemon machine, so install only code you trust — including this.
+
+```bash
+paseo plugin add arteven/paseo-sbx --ref v0.1.0
+paseo plugin ls
+```
+
+Pinning to a tag is the recommended default. Omitting `--ref` tracks the default branch instead, which
+means `paseo plugin update paseo-sbx` picks up whatever has landed since.
+
+Plugins also need to be switched on for the daemon: **Settings → Plugins → Enable plugins**, or the root
+`pluginsEnabled` field in the daemon's `config.json` followed by `paseo reload`. A **Docker Sandboxes**
+item appears in the sidebar once it is running.
+
+To work on it locally instead, clone it and point Paseo at the directory:
+
+```bash
+git clone https://github.com/arteven/paseo-sbx.git
+cd paseo-sbx && npm install
+paseo plugin install "$PWD"
+```
+
+## Requirements
+
+- A Paseo daemon running **on the host**, with plugins enabled
+- `sbx` **0.39 or newer**, on the daemon's `PATH`
+- Sandboxes in direct mode — `--clone` sandboxes are not supported (see [Limitations](#limitations))
+
+Note that `sbx` and `paseo` are both host-side tools: neither exists *inside* a sandbox, so the daemon
+has to be running on the host, not in one of the sandboxes it manages.
 
 ## How it works
 
-Paseo has no plugin extension point for providers or execution environments. Instead the plugin
-generates provider entries at runtime:
+Paseo has no extension point for providers or execution environments, so the plugin generates provider
+config entries at runtime instead:
 
-- Server-side RPCs shell out to the `sbx` CLI (`sbx ls --json`, `create`, `stop`, `rm`, `policy`, …).
+- Server-side RPCs shell out to the `sbx` CLI (`sbx ls --json`, and whatever your custom actions call).
 - A reconciler writes `agents.providers.sbx-*` entries through `paseo.config.patch()` — runtime-mutable,
-  no daemon restart.
-- Each entry's `command` points at a small launcher shim that verifies `$PWD` is one of the sandbox's
+  no daemon restart — one per sandbox, on every poll of the sandbox list.
+- Each entry's `command` points at a small launcher shim that checks `$PWD` is one of the sandbox's
   workspaces, then execs `sbx exec -w "$PWD" "$SANDBOX" claude "$@"`.
 
-It works because sbx mounts the host workspace at the **identical absolute path** inside the sandbox, so
-the daemon (on the host) and the agent (in the sandbox) agree on `cwd`.
+The plugin owns the `sbx-` provider id prefix and touches no entry it did not generate. Two design
+decisions are load-bearing: `extends: "claude"`, which keeps Paseo's native Claude integration rather
+than going through ACP, and user-managed sandboxes — the plugin surfaces what `sbx ls` reports and never
+creates one for you.
 
-Design decisions: `extends: "claude"` (keeps Paseo's native Claude integration) and user-managed
-sandboxes (the plugin surfaces what exists rather than auto-creating).
+[`docs/design.md`](docs/design.md) has the full reasoning, with citations into Paseo's source.
 
 ## Custom sandbox actions
 
-Each sandbox row can show a row of user-defined buttons — e.g. "Publish 8080", "Stop" — that run a
-shell command **on the host** (not inside the sandbox) when pressed. Configure them in
-`$PASEO_HOME/sbx-actions.json` (defaults to `~/.paseo/sbx-actions.json`; not created automatically):
+Each sandbox row can show a row of your own buttons — "Publish 8080", "Stop" — that run a shell command
+**on the host** when pressed. Configure them in `$PASEO_HOME/sbx-actions.json` (defaults to
+`~/.paseo/sbx-actions.json`; not created for you):
 
 ```json
 {
@@ -51,34 +73,48 @@ shell command **on the host** (not inside the sandbox) when pressed. Configure t
 }
 ```
 
-- `label` and `command` are both required strings; extra fields on an entry are ignored.
-- The command runs through the same shell-invocation logic Paseo uses for its own setup commands
-  (`bash -c` on Linux/macOS, PowerShell on Windows), with `$SBX_SANDBOX_NAME` set to the sandbox's
-  name — that's the only way the sandbox is identified to the command, there's no path templating.
-- The same action list applies to every sandbox row; there's no per-sandbox or per-status config.
-- If the file is missing, the action row is simply empty. If it exists but is malformed, valid
-  entries still load and a warning banner names what was dropped and why — a bad file never blocks
-  the sandbox list itself.
-- The command's exit code, stdout, and stderr come back as a toast (and a modal for non-trivial
-  output); there's no live-streaming output.
+- `label` and `command` are both required; extra fields on an entry are ignored.
+- Commands run through the same shell invocation Paseo uses for its own setup commands (`bash -c` on
+  Linux and macOS, PowerShell on Windows), with `$SBX_SANDBOX_NAME` set to the sandbox's name. That env
+  var is the only way the sandbox is identified — there is no path templating.
+- To run something *inside* the sandbox, write `sbx exec $SBX_SANDBOX_NAME …` yourself.
+- The same list applies to every row; there is no per-sandbox or per-status config, so a "Stop" button
+  shows up on stopped sandboxes too and simply fails on press.
+- A missing file means no buttons. A malformed one still loads its valid entries, with a warning naming
+  what was dropped — a bad file never blocks the sandbox list itself.
+- Exit code, stdout and stderr come back as a toast (and a modal for longer output). No live streaming.
 
-This lives in `$PASEO_HOME` rather than Paseo's own `config.json` because there's no plugin storage
-API — see `docs/research/would_that_work.md` §5.5 for why.
+It lives in `$PASEO_HOME` rather than Paseo's `config.json` because there is no plugin storage API and
+unknown keys in `config.json` stop the daemon from starting. See
+[`docs/design.md`](docs/design.md#custom-sandbox-actions).
 
-## Read this first
+## Limitations
 
-[`docs/research/would_that_work.md`](docs/research/would_that_work.md) — the full feasibility study:
-what Paseo does and does not support, the mechanisms this relies on with source citations, the sbx
-command surface, known risks, and open questions.
+- **Not yet verified end to end.** The launcher shim's behaviour is confirmed against a live sbx —
+  including that repeated start/kill cycles leave no process behind — but the reconciler's
+  `config.patch()` writes, the generated provider entries, and the custom-action execution path have not
+  been exercised against a live daemon.
+- **Clone-mode sandboxes are not supported and not filtered out.** Paths inside a `--clone` sandbox do
+  not correspond to the host's, so Paseo's diff and git surfaces would point at the wrong tree. Nothing
+  in `sbx ls --json` identifies them, so the plugin cannot exclude them for you — don't point it at one.
+- **Generated providers survive uninstall.** Plugin teardown has no handle to write config, so
+  `sbx-*` entries linger until the plugin runs again or you delete them by hand.
 
-## Requirements
+## Development
 
-- A Paseo daemon running **on the host**, with `pluginsEnabled: true`
-- The `sbx` CLI on the daemon's `PATH`
-- Sandboxes in direct mode. `--clone` sandboxes are not supported (paths inside them don't correspond to
-  the host workspace — see the research doc §3.4) — the plugin does not yet detect and exclude them, so
-  avoid pointing it at one.
+```bash
+npm install
+npm run check   # typecheck + client-bundle syntax rules
+npm test
+paseo plugin reload paseo-sbx
+```
+
+The tests cover the pure logic only — config parsing, id generation, the reconciler's diff. Anything
+that shells out to `sbx` or writes daemon config has to be exercised by hand on a real host.
+
+`docs/ui.md` is the styling reference for anything rendered in a `*.client.tsx` surface; `CLAUDE.md`
+carries the constraints that bite when editing plugin code.
 
 ## License
 
-TBD
+MIT — see [LICENSE](LICENSE).

@@ -20,7 +20,7 @@ import {
 
 // The surface is one Settings-style section: a muted header line with a trailing link, then one
 // bordered card of flat rows divided by hairlines. Every style below is the app's own, named
-// after the style it copies — see docs/research/ui.md for the source of each.
+// after the style it copies — see docs/ui.md for the source of each.
 const POLL_INTERVAL_MS = 5000;
 
 // The RPC round-trip has a hard 30s ceiling on the host; execFile giving up on our end does not
@@ -33,7 +33,7 @@ const TOAST_DURATION_MS = 4000;
 
 // `@getpaseo/plugin/react-native`'s `Modal`/`useToast` are declared in the generated
 // paseo-plugin.d.ts but the installed app runtime can lag it entirely — not just missing an
-// export (the `Icon` case docs/research/ui.md warns about), but rejecting the whole module
+// export (the `Icon` case docs/ui.md warns about), but rejecting the whole module
 // specifier at import time: "Module ... is not available in plugin client code", thrown before
 // any runtime guard on the import ever runs, taking the entire bundle down on both platforms.
 // So toast/modal are hand-rolled below from `react-native` primitives only, which this surface
@@ -46,7 +46,7 @@ function toastVariantColor(variant: ToastVariant, colors: PluginColors): string 
   return colors.statusWarning;
 }
 
-// No design token exists for a modal backdrop (docs/research/ui.md doesn't cover one — this
+// No design token exists for a modal backdrop (docs/ui.md doesn't cover one — this
 // surface had none before), and a dimming backdrop is conventionally black regardless of theme
 // rather than derived from `resolvePluginColors()`.
 const MODAL_BACKDROP_COLOR = "rgba(0, 0, 0, 0.5)";
@@ -166,7 +166,7 @@ function useStyles(theme: PluginTheme) {
       rowTitle: { color: colors.foreground, fontSize: fontSize.base },
       rowHint: { color: colors.foregroundMuted, fontSize: fontSize.sm, marginTop: spacing[1] },
 
-      // Second line under the meta line, per docs/research/would_that_work.md's custom-actions
+      // Second line under the meta line, per docs/design.md's custom-actions
       // design — never trailing the row (collides with the status badge) and never one card per
       // row (forbidden by ui.md).
       actionsRow: {
@@ -504,7 +504,7 @@ export function MainSurface({ theme }: PluginSurfaceProps) {
   // a __async helper. That is only half of what Metro does for app code, and the generator syntax
   // that survives is a parse error on the Hermes build shipped in the mobile app — which makes
   // evaluate.ts throw, and registry.ts drop *every* contribution, sidebar item included, with the
-  // error going nowhere but console.warn. No async in *.client.tsx; see docs/research/ui.md.
+  // error going nowhere but console.warn. No async in *.client.tsx; see docs/ui.md.
   const refresh = useCallback(() => {
     listSandboxes({}).then(
       (result) => {

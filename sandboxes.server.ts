@@ -38,7 +38,7 @@ export async function fetchSbxSandboxes(): Promise<SbxListResult> {
       ? (parsed as { sandboxes: unknown[] }).sandboxes
       : [];
 
-  // sbx ls --json's schema is undocumented (see docs/research/would_that_work.md §5.3) — drop
+  // sbx ls --json's schema is undocumented (see docs/design.md) — drop
   // entries that don't match rather than failing the whole list.
   const sandboxes = rawList.flatMap((entry) => {
     const result = SbxSandboxSchema.safeParse(entry);
@@ -64,7 +64,7 @@ export async function listSandboxesHandler(_input: {}, { paseo }: PluginHandlerC
   }
 
   // Reconciliation piggybacks on the list RPC because there is no separate "plugin activated" server
-  // hook to trigger it from — see docs/research/would_that_work.md. The client already polls this RPC
+  // hook to trigger it from — see docs/design.md. The client already polls this RPC
   // every 5s, so provider entries stay caught up with sandbox create/destroy on the same cadence.
   const reconcile = await reconcileProviders(sandboxes, { paseo });
 

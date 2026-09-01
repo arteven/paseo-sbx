@@ -11,7 +11,7 @@ import type { PluginTheme } from "@getpaseo/plugin";
  *
  * Values mirror `SPACING`, `FONT_SIZE`, `FONT_WEIGHT`, `BORDER_RADIUS` and `OPACITY` in
  * `packages/app/src/styles/theme.ts`. Only the steps this plugin uses are kept —
- * see `docs/research/ui.md` for where each one is spent in the app.
+ * see `docs/ui.md` for where each one is spent in the app.
  */
 export const spacing = { 1: 4, 2: 8, 3: 12, 4: 16, 6: 24, 12: 48 } as const;
 export const fontSize = { sm: 12, base: 14 } as const;

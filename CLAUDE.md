@@ -1,67 +1,52 @@
 # paseo-sbx
 
-A Paseo plugin exposing Docker `sbx` sandboxes as Paseo agent providers. See `README.md` for the
-one-paragraph version.
-
-## Read before changing anything
-
-`docs/research/would_that_work.md` is the design of record — feasibility, mechanisms, source citations,
-risks, and open questions. Keep it current when decisions change; it is meant to stay accurate, not
-become a historical artifact.
-
-Locked decisions: `extends: "claude"` (not `"acp"`), user-managed sandboxes (the plugin does not
-auto-create one per workspace).
-
-`docs/research/ui.md` is the styling reference for anything rendered in a `*.client.tsx` surface. It
-points at the upstream files that own each convention rather than copying them, and it ends in a
-checklist. Follow it instead of inventing a look. Tokens live in `theme.shared.ts` — read colours
-through `resolvePluginColors()` and never inline a raw number at a call site.
+A Paseo plugin exposing Docker `sbx` sandboxes as Paseo agent providers. `README.md` is the
+user-facing version; `docs/design.md` is why the plugin is shaped this way, and `docs/ui.md` is the
+styling reference for `*.client.tsx` surfaces. Both are meant to stay accurate — update them when a
+decision changes rather than leaving them behind.
 
 ## Environment
 
-**`sbx` and `paseo` are host-side tools and are not installed in this sandbox.** Plugin code can be
-authored and typechecked here; every integration test must run on the host against a real daemon and
-real sandboxes. Do not assume a command works because it typechecks.
+**`sbx` and `paseo` are host-side tools and are not installed in this sandbox.** Code can be authored
+and typechecked here; every integration test runs on the host against a real daemon and real
+sandboxes. Do not assume a command works because it typechecks.
 
-A shallow clone of `getpaseo/paseo` is useful for checking API surface against source rather than docs —
-the docs drift (e.g. `docs/plugins.md:56` claims the SDK is unpublished; it is on npm).
+Client bundles *can* be compiled and rendered here, which is the only way to catch a host-only render
+error without a phone: `npm i @getpaseo/server`, call `compilePlugin(index.ts)` from
+`dist/server/server/plugins/compiler.js`, then evaluate the returned client bundle with a stub
+`require` mirroring `packages/app/src/plugins/evaluate.ts`.
 
-## Paseo plugin constraints
+A shallow clone of `getpaseo/paseo` is worth having — the docs drift, the source does not.
 
-- Manifest is identity-only and strict: `{ "id": "..." }`.
-- `index.ts` default-exports exactly one function, one identifier param, block body, returning a cleanup
-  function. Keep it to contribution wiring.
-- Filename boundaries are compiler-enforced: `*.client.tsx` (React/RN), `*.server.ts` (Node, filesystem,
-  process), `*.shared.ts` (Zod contracts). Cross-importing server from client, or vice versa, fails
-  compilation.
-- All `sbx` shelling lives behind `plugin.handle(...)` RPCs in `*.server.ts`. The client bundle runs in
-  the app with a strict require allowlist and has no `node:*`.
-- RPC handlers have a 30s timeout.
-- **Never write `async`/`await` or generators in `*.client.tsx` / `*.shared.ts`** — use promise
-  chains. `npm run check` enforces it. The compiler builds client bundles with esbuild's
-  `supported: { "async-await": false }` intending to match Metro, but esbuild lowers `await` only as
-  far as a `function*`, which the mobile app's Hermes cannot parse. `evaluate.ts` then throws inside
-  `globalThis.eval`, `registry.ts` catches it and returns `[]`, and **every** contribution vanishes
-  at once — with nothing but a `console.warn` to show for it (the Settings → Plugins readout lands
-  in v0.7.0-beta.3; the phone here is 0.5.2). Desktop's V8 parses generators fine, so it is invisible
-  until you open the phone. Fixed and confirmed on device in `66d9c94`; bundle size, `zod`, `useRpc`
-  and the rendered tree were each ruled out by bisection.
-- The plugin contributes **no Command Center item**, dropped in `1cefeb9` after a mobile crash. The
-  recorded rationale (`select()` closing the `@gorhom` sheet while navigating) is not supported by
-  the app source, and the generator bug above was live at the time and takes down every contribution
-  together — so that "crash" was most likely just this. Re-adding is probably safe now, but test on
-  a phone first. Independently, `PluginCommandCenterActions` yields nothing when `serverId` is null,
-  so the item is absent off a `/h/<id>` route regardless. The **sidebar** item is a separate
-  mechanism and is fine on mobile.
-- The SDK's runtime surface is whatever the *installed app* injects, which can lag the generated
-  `paseo-plugin.d.ts` — the host-rendered `Icon` type exists in the scaffold but not in the runtime of
-  Paseo < 0.7.0-beta.1, and rendering an undefined import is React error #130. Guard newer SDK exports
-  at runtime rather than trusting the types.
-- Client bundles can be compiled and rendered locally without a daemon: `npm i @getpaseo/server`,
-  call `compilePlugin(index.ts)` from `dist/server/server/plugins/compiler.js`, then evaluate the
-  returned client bundle with a stub `require` mirroring `packages/app/src/plugins/evaluate.ts`. This
-  reproduces host-only render errors in this sandbox.
-- The plugin API is experimental and unversioned; compatibility rides on `server_info` feature flags.
+`npm test` runs the TypeScript tests through `tsx`, against `test/sdk-stub` — a two-file stand-in for
+`@getpaseo/plugin`, which is host-injected at runtime and deliberately not a dependency. Installing the
+real package would drag `@getpaseo/client`/`@getpaseo/protocol` to 0.7.0 and typecheck the reconciler
+against a daemon this plugin is not developed against. Extend the stub if a test needs another SDK
+*value*; types keep coming from `paseo-plugin.d.ts`.
+
+## Hard rules
+
+- **Never write `async`/`await` or generators in `*.client.tsx` or `*.shared.ts`** — use promise
+  chains. `npm run check` enforces this. esbuild lowers `await` only as far as a `function*`, which
+  the mobile app's Hermes cannot parse; evaluation then throws and **every** contribution disappears
+  at once, with only a `console.warn` to show for it. Desktop's V8 parses generators fine, so it is
+  invisible until you open the phone.
+- Filename boundaries are compiler-enforced: `*.client.tsx` (React/RN), `*.server.ts` (Node,
+  filesystem, process), `*.shared.ts` (Zod contracts). Cross-importing server from client, or vice
+  versa, fails compilation.
+- All `sbx` shelling lives behind `plugin.handle(...)` RPCs in `*.server.ts`. The client bundle runs
+  in the app against a strict require allowlist and has no `node:*`. Handlers time out at 30s.
+- Import only host-provided modules at runtime — `@getpaseo/plugin`, `@getpaseo/plugin/server`,
+  `react`, `react-native`, `zod`. Git-installed plugins get no `npm install`, so anything else must be
+  `import type` (erased) or vendored. An unavailable *module specifier* throws at bundle load, before
+  any runtime guard can run, taking the whole plugin down.
+- The manifest is identity-only and `.strict()`: `{ "id": "paseo-sbx" }`. Metadata goes in
+  `package.json`. The id is also the `plugins.paseo-sbx` config key the reconciler reads its own
+  install path from.
+- `index.ts` default-exports exactly one function, one identifier param, block body, returning a
+  cleanup function. Keep it to contribution wiring.
+- Colours come from `resolvePluginColors()` in `theme.shared.ts`. Never inline a raw colour at a call
+  site.
 
 ## Conventions
 
@@ -71,3 +56,8 @@ the docs drift (e.g. `docs/plugins.md:56` claims the SDK is unpublished; it is o
 - Never log `sbx secret` output, tokens, or credentials. Plugin stdout/stderr is captured and surfaced.
 - Never enable `pluginsEnabled` on the user's daemon without asking first.
 - Treat undocumented `sbx` JSON output as unstable: consume the minimum set of fields and fail soft.
+- The SDK's runtime surface is whatever the *installed app* injects, which can lag the generated
+  `paseo-plugin.d.ts`. Guard newer SDK exports at runtime rather than trusting the types.
+- There is no Command Center item. It was dropped after a mobile failure that was most likely the
+  generator bug above; re-adding is probably safe, but test on a phone first. (`PluginCommandCenterActions`
+  yields nothing when `serverId` is null, so the item is absent off a `/h/<id>` route regardless.)

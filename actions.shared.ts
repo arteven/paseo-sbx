@@ -5,7 +5,7 @@ import { z } from "zod";
 // paseo's config.json is a trap: that file's on-disk schema is `.strict()`, so an unknown root key
 // stops the daemon starting, and `config.patch()` drops unknown fields through an allowlist even if
 // it didn't. There is also no plugin settings/storage API to use instead. See
-// docs/research/would_that_work.md §9. Fields are deliberately `label`/`command` only — no id, when,
+// docs/design.md. Fields are deliberately `label`/`command` only — no id, when,
 // confirm, icon, cwd, or env.
 export const SbxActionSchema = z.object({
   label: z.string(),

@@ -60,7 +60,7 @@ export function parseActionsConfig(raw: unknown): ParsedActionsConfig {
 // Absent file → no actions, silent (not every install has one). Present but unreadable or
 // malformed → fail soft with a warning, since that's a user believing they configured something
 // that silently isn't there. Re-read on every call: no caching, no watcher (see
-// docs/research/would_that_work.md §5 for why a 5s poll makes that unnecessary).
+// docs/design.md for why a 5s poll makes that unnecessary).
 export function loadActionsConfig(env: NodeJS.ProcessEnv = process.env): ParsedActionsConfig {
   const configPath = resolveActionsConfigPath(env);
   if (!existsSync(configPath)) return { actions: [], warning: null };
@@ -99,7 +99,7 @@ interface StringCommandShellInvocation {
 // Mirrors paseo's own house style for user-authored command strings
 // (packages/server/src/utils/string-command-shell.ts + execSetupCommand in
 // packages/server/src/utils/worktree.ts) rather than the argv-array/no-shell style used for
-// sbx ls above — see docs/research/would_that_work.md.
+// sbx ls above — see docs/design.md.
 function buildStringCommandShellInvocation(command: string): StringCommandShellInvocation {
   if (process.platform === "win32") {
     return {
