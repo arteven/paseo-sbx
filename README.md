@@ -1,5 +1,7 @@
 # paseo-sbx
 
+[![CI](https://github.com/arteven/paseo-sbx/actions/workflows/ci.yml/badge.svg)](https://github.com/arteven/paseo-sbx/actions/workflows/ci.yml)
+
 A [Paseo](https://github.com/getpaseo/paseo) plugin that exposes [Docker `sbx`](https://docs.docker.com/ai/sandboxes/)
 sandboxes as Paseo agent providers. Pick "myproj (sbx)" in Paseo's provider picker and Claude Code runs
 inside that sandbox, against the same working directory you were already in.
